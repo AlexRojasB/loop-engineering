@@ -16,7 +16,8 @@ def run_expected_red_phase(
     config,
     workspace,
     state,
-    test_snapshot
+    test_snapshot,
+    test_command
 ):
     print()
     print("=" * 60)
@@ -25,7 +26,7 @@ def run_expected_red_phase(
 
     result = run_command(
         workspace,
-        config["validation"]["test"]
+        test_command
     )
 
     print(

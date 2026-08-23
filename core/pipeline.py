@@ -80,9 +80,25 @@ def run_pipeline(
         repository_files
     )
 
+    build_command = adapter.build_command(
+        repository_files
+    )
+
+    test_command = adapter.test_command(
+        repository_files
+    )
+
     print(
         f"Detected language adapter: "
         f"{adapter.name}"
+    )
+
+    print(
+        f"Build command: {build_command}"
+    )
+
+    print(
+        f"Test command: {test_command}"
     )
 
     if not ensure_clean_baseline(
@@ -156,7 +172,8 @@ def run_pipeline(
         state,
         contract[
             "test_snapshot"
-        ]
+        ],
+        test_command
     ):
         return False
 
@@ -173,7 +190,8 @@ def run_pipeline(
         config,
         workspace,
         task,
-        implementation_changes
+        implementation_changes,
+        build_command
     ):
         print(
             "Build did not converge."
@@ -197,7 +215,8 @@ def run_pipeline(
         task,
         state,
         planning["grouped"],
-        implementation_changes
+        implementation_changes,
+        test_command
     ):
         print(
             "Tests did not converge."

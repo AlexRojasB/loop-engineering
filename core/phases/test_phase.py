@@ -48,7 +48,8 @@ def run_test_phase(
     task,
     state,
     grouped_changes,
-    implementation_changes
+    implementation_changes,
+    test_command
 ):
     print()
     print("=" * 60)
@@ -64,7 +65,7 @@ def run_test_phase(
 
     tests = run_command(
         workspace,
-        config["validation"]["test"]
+        test_command
     )
 
     print(
@@ -253,7 +254,7 @@ def run_test_phase(
 
         candidate = run_command(
             workspace,
-            config["validation"]["test"]
+            test_command
         )
 
         print(

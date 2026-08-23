@@ -41,7 +41,8 @@ def run_build_phase(
     config,
     workspace,
     task,
-    implementation_changes
+    implementation_changes,
+    build_command
 ):
     print()
     print("=" * 60)
@@ -50,7 +51,7 @@ def run_build_phase(
 
     build = run_command(
         workspace,
-        config["validation"]["build"]
+        build_command
     )
 
     print(
@@ -123,7 +124,7 @@ def run_build_phase(
 
         candidate = run_command(
             workspace,
-            config["validation"]["build"]
+            build_command
         )
 
         print(

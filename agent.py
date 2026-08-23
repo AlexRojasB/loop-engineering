@@ -8,6 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.models import call_model
+from core.validation import (
+    classify_red_state,
+    failure_score,
+    parse_test_counts,
+)
 from core.guards import (
     extract_test_method_names,
     production_guard,
@@ -240,70 +245,6 @@ def merge_test_snippet(
 # ============================================================
 # RED CLASSIFICATION
 # ============================================================
-
-def classify_red_state(output):
-    broken_codes = {
-        "CS1001",
-        "CS1002",
-        "CS1003",
-        "CS1022",
-        "CS1513",
-        "CS1529"
-    }
-
-    compiler_codes = set(
-        re.findall(
-            r"\bCS\d+\b",
-            output
-        )
-    )
-
-    if compiler_codes & broken_codes:
-        return {
-            "classification":
-                "BROKEN_TEST_SUITE",
-            "reason":
-                "Syntax/structural errors detected."
-        }
-
-    missing_feature_codes = {
-        "CS0103",
-        "CS0117",
-        "CS1061",
-        "CS0246"
-    }
-
-    if (
-        compiler_codes
-        & missing_feature_codes
-    ):
-        return {
-            "classification":
-                "EXPECTED_RED",
-            "reason":
-                "Tests reference requested feature "
-                "that does not exist yet."
-        }
-
-    if (
-        "Assert." in output
-        or "[FAIL]" in output
-        or "Failed!" in output
-    ):
-        return {
-            "classification":
-                "EXPECTED_RED",
-            "reason":
-                "Tests execute but feature behavior "
-                "is not satisfied yet."
-        }
-
-    return {
-        "classification":
-            "UNKNOWN",
-        "reason":
-            "Could not classify."
-    }
 
 
 # ============================================================
@@ -666,52 +607,6 @@ Return JSON only:
 # VALIDATION HELPERS
 # ============================================================
 
-def failure_score(output):
-    compiler = len(
-        re.findall(
-            r"\berror\s+"
-            r"(?:CS|MSB|NU|NETSDK)\d+",
-            output,
-            flags=re.IGNORECASE
-        )
-    )
-
-    failed_tests = len(
-        set(
-            re.findall(
-                r"Failed\s+"
-                r"([A-Za-z0-9_.]+Tests\."
-                r"[A-Za-z0-9_]+)",
-                output
-            )
-        )
-    )
-
-    return (
-        compiler * 100
-        + failed_tests * 10
-    )
-
-
-def parse_test_counts(output):
-    match = re.search(
-        r"Failed:\s*(\d+),\s*"
-        r"Passed:\s*(\d+)",
-        output
-    )
-
-    if not match:
-        return {
-            "failed": None,
-            "passed": None
-        }
-
-    return {
-        "failed":
-            int(match.group(1)),
-        "passed":
-            int(match.group(2))
-    }
 
 
 # ============================================================

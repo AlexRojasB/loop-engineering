@@ -258,7 +258,7 @@ def merge_test_snippet(
 
 def planner_prompt(task, files):
     return render_prompt(
-        "planner.txt",
+        "planner.md",
         task=task,
         files="\n".join(files)
     )
@@ -269,7 +269,7 @@ def test_snippet_prompt(
     current_test_content
 ):
     return render_prompt(
-        "test_generator.txt",
+        "test-generator.md",
         task=task,
         production=implementation_text(
             implementation_files
@@ -285,7 +285,7 @@ def test_snippet_revision_prompt(
     issues
 ):
     return render_prompt(
-        "test_revision.txt",
+        "test-revision.md",
         task=task,
         production=implementation_text(
             implementation_files
@@ -301,7 +301,7 @@ def test_review_prompt(
     merged_test_content
 ):
     return render_prompt(
-        "test_reviewer.txt",
+        "test-reviewer.md",
         task=task,
         production=implementation_text(
             implementation_files
@@ -316,7 +316,7 @@ def implementation_prompt(
     frozen_tests
 ):
     return render_prompt(
-        "coder.txt",
+        "coder.md",
         behavior_contract=build_behavior_contract(
             task,
             file_change
@@ -337,7 +337,7 @@ def repair_prompt(
     )
 
     return render_prompt(
-        "repair.txt",
+        "repair.md",
         task=task,
         target=file_change["path"],
         requirements=requirements,
@@ -353,7 +353,7 @@ def reviewer_prompt(
     import json
 
     return render_prompt(
-        "reviewer.txt",
+        "reviewer.md",
         task=task,
         plan=json.dumps(
             plan,

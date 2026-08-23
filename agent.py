@@ -8,6 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.models import call_model
+from core.guards import (
+    extract_test_method_names,
+    production_guard,
+    validate_test_snippet,
+)
 from core.planning import (
     group_changes_by_file,
     normalize_plan,
@@ -128,122 +133,7 @@ def extract_code(text):
 # TEST SNIPPET / MERGE
 # ============================================================
 
-def extract_test_method_names(text):
-    names = []
 
-    pattern = (
-        r"(?:public|private|internal|protected)"
-        r"\s+(?:async\s+)?"
-        r"(?:void|Task)\s+"
-        r"([A-Za-z_][A-Za-z0-9_]*)\s*\("
-    )
-
-    for name in re.findall(
-        pattern,
-        text
-    ):
-        names.append(name)
-
-    return names
-
-
-def contains_production_redefinition(
-    snippet,
-    implementation_files
-):
-    production = set()
-
-    patterns = [
-        r"\bclass\s+([A-Za-z_][A-Za-z0-9_]*)",
-        r"\benum\s+([A-Za-z_][A-Za-z0-9_]*)",
-        r"\binterface\s+([A-Za-z_][A-Za-z0-9_]*)",
-        r"\brecord\s+([A-Za-z_][A-Za-z0-9_]*)"
-    ]
-
-    for content in (
-        implementation_files.values()
-    ):
-        for pattern in patterns:
-            production.update(
-                re.findall(
-                    pattern,
-                    content
-                )
-            )
-
-    declared = set()
-
-    for pattern in patterns:
-        declared.update(
-            re.findall(
-                pattern,
-                snippet
-            )
-        )
-
-    return sorted(
-        production & declared
-    )
-
-
-def validate_test_snippet(
-    snippet,
-    original_test_content,
-    implementation_files
-):
-    issues = []
-
-    if not snippet.strip():
-        issues.append(
-            "Generated test snippet is empty."
-        )
-
-    if (
-        "[Fact]" not in snippet
-        and "[Theory]" not in snippet
-        and "[Test]" not in snippet
-    ):
-        issues.append(
-            "Generated snippet contains no recognizable test."
-        )
-
-    redefined = (
-        contains_production_redefinition(
-            snippet,
-            implementation_files
-        )
-    )
-
-    for symbol in redefined:
-        issues.append(
-            "Test snippet illegally redefines "
-            f"production symbol: {symbol}"
-        )
-
-    existing_names = set(
-        extract_test_method_names(
-            original_test_content
-        )
-    )
-
-    generated_names = (
-        extract_test_method_names(
-            snippet
-        )
-    )
-
-    for name in generated_names:
-        if name in existing_names:
-            issues.append(
-                f"Generated duplicate test method: {name}"
-            )
-
-    if not generated_names:
-        issues.append(
-            "Could not detect any generated test methods."
-        )
-
-    return issues
 
 
 def find_class_body_end(
@@ -643,25 +533,6 @@ GENERAL REQUIREMENTS:
 - Do not add dependencies unless explicitly approved.
 """
 
-
-def production_guard(content):
-    forbidden_patterns = {
-        "using Xunit": r"\\busing\\s+Xunit\\s*;",
-        "[Fact]": r"\\[Fact(?:Attribute)?\\]",
-        "[Theory]": r"\\[Theory(?:Attribute)?\\]",
-        "Assert": r"\\bAssert\\.",
-        "test class": r"\\b(?:class|record)\\s+\\w*Tests\\b"
-    }
-
-    issues = []
-
-    for label, pattern in forbidden_patterns.items():
-        if re.search(pattern, content):
-            issues.append(
-                f"Production output contains test artifact: {label}"
-            )
-
-    return issues
 
 
 def implementation_prompt(

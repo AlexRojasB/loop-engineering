@@ -1,0 +1,13 @@
+{
+  "developer_model": "qwen2.5-coder:3b",
+  "repair_model": "qwen2.5-coder:3b",
+  "escalation_model": "qwen3:4b-instruct-2507-q4_K_M",
+  "reviewer_model": "qwen3:4b-instruct-2507-q4_K_M",
+  "max_iterations": 5,
+  "project_path": "/home/alex/ai-benchmarks/order-pipeline/OrderPipeline",
+  "target_file": "Program.cs",
+  "validation_commands": [
+    "dotnet build",
+    "dotnet test ../OrderPipeline.Tests/OrderPipeline.Tests.csproj"
+  ]
+}

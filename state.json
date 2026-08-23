@@ -1,0 +1,19 @@
+{
+  "task": "Add support for refunding paid orders.\n\nRequirements:\n\n1. Add Refunded to OrderStatus.\n2. Add RefundOrder(Guid orderId) to OrderService.\n3. RefundOrder returns false when the order does not exist.\n4. Only Paid orders can transition to Refunded.\n5. Pending, Cancelled, and already Refunded orders cannot be refunded.\n6. Existing behavior must continue working.\n7. Add appropriate automated tests for the new behavior.\n8. Build and all tests must pass.\n",
+  "phase": "completed",
+  "planner_complete": true,
+  "tests_generated": true,
+  "tests_structurally_valid": true,
+  "tests_reviewed": true,
+  "tests_frozen": true,
+  "expected_red_confirmed": true,
+  "implementation_generated": true,
+  "build": "pass",
+  "tests": {
+    "status": "pass",
+    "passed": 17,
+    "failed": 0
+  },
+  "review": "approve",
+  "updated_at": "2026-08-23T18:49:43.629460+00:00"
+}

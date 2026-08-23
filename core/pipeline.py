@@ -6,6 +6,7 @@ from core.phases.expected_red_phase import run_expected_red_phase
 from core.phases.implementation_phase import run_implementation_phase
 from core.phases.build_phase import run_build_phase
 from core.phases.review_phase import run_review_phase
+from core.phases.test_phase import run_test_phase
 
 from core.context import (
     build_behavior_contract,
@@ -58,163 +59,6 @@ from core.validation import (
 
 
 
-
-
-def run_test_phase(
-    config,
-    workspace,
-    task,
-    state,
-    implementation_changes
-):
-    print()
-    print("=" * 60)
-    print("PHASE 6 - TESTS")
-    print("=" * 60)
-
-    tests = run_command(
-        workspace,
-        config[
-            "validation"
-        ]["test"]
-    )
-
-    print(
-        compact(
-            tests["output"]
-        )
-    )
-
-    best_score = failure_score(
-        tests["output"]
-    )
-
-    for attempt in range(
-        1,
-        config[
-            "max_test_repairs"
-        ] + 1
-    ):
-        if tests[
-            "exit_code"
-        ] == 0:
-            break
-
-        print()
-        print(
-            f"TEST REPAIR {attempt}"
-        )
-
-        snapshot = snapshot_files(
-            workspace,
-            [
-                change["path"]
-                for change
-                in implementation_changes
-            ]
-        )
-
-        for change in implementation_changes:
-            path = change["path"]
-
-            result = call_model(
-                config,
-                config["coder_model"],
-                repair_prompt(
-                    task,
-                    change,
-                    read_file(
-                        workspace,
-                        path
-                    ),
-                    compact(
-                        tests["output"]
-                    )
-                )
-            )
-
-            if not result["ok"]:
-                continue
-
-            generated = extract_code(
-                result["response"]
-            )
-
-            if production_guard(
-                generated
-            ):
-                continue
-
-            write_file(
-                workspace,
-                path,
-                generated
-            )
-
-        candidate = run_command(
-            workspace,
-            config[
-                "validation"
-            ]["test"]
-        )
-
-        print(
-            compact(
-                candidate["output"]
-            )
-        )
-
-        if candidate[
-            "exit_code"
-        ] == 0:
-            tests = candidate
-            break
-
-        score = failure_score(
-            candidate["output"]
-        )
-
-        if score < best_score:
-            print(
-                "Test progress detected."
-            )
-
-            tests = candidate
-            best_score = score
-
-        else:
-            print(
-                "No test progress. "
-                "Rolling back."
-            )
-
-            restore_snapshot(
-                workspace,
-                snapshot
-            )
-
-    if tests[
-        "exit_code"
-    ] != 0:
-        return False
-
-    counts = parse_test_counts(
-        tests["output"]
-    )
-
-    state["tests"] = {
-        "status": "pass",
-        "passed":
-            counts["passed"],
-        "failed": 0
-    }
-
-    save_state(
-        config,
-        state
-    )
-
-    return True
 
 
 
@@ -338,6 +182,7 @@ def run_pipeline(
         workspace,
         task,
         state,
+        planning["grouped"],
         implementation_changes
     ):
         print(

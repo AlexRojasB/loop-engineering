@@ -8,6 +8,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.models import call_model
+from core.context import (
+    build_behavior_contract,
+    implementation_text,
+)
 from core.validation import (
     classify_red_state,
     failure_score,
@@ -297,22 +301,6 @@ Return JSON only:
 """
 
 
-def implementation_text(
-    implementation_files
-):
-    result = ""
-
-    for path, content in (
-        implementation_files.items()
-    ):
-        result += f"""
-===== PRODUCTION: {path} =====
-{content}
-===== END =====
-"""
-
-    return result
-
 
 def test_snippet_prompt(
     task,
@@ -452,26 +440,6 @@ Return JSON only:
   "decision": "APPROVE or REJECT",
   "issues": []
 }}
-"""
-
-
-def build_behavior_contract(task, file_change):
-    reasons = "\n".join(
-        f"- {r}"
-        for r in file_change["reasons"]
-    )
-
-    return f"""
-TASK:
-{task}
-
-APPROVED BEHAVIOR FOR THIS PRODUCTION FILE:
-{reasons}
-
-GENERAL REQUIREMENTS:
-- Preserve all existing behavior not changed by the task.
-- Do not introduce test framework code into production.
-- Do not add dependencies unless explicitly approved.
 """
 
 

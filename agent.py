@@ -8,6 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.models import call_model
+from core.test_merge import merge_test_snippet
+from core.utils import (
+    compact,
+    extract_code,
+    load_json,
+)
 from core.prompts import render_prompt
 from core.context import (
     build_behavior_contract,
@@ -80,61 +86,9 @@ CONFIG_FILENAMES = {
 # GENERAL
 # ============================================================
 
-def load_json(path):
-    with open(path) as f:
-        return json.load(f)
-
 
 def now_iso():
     return datetime.now(timezone.utc).isoformat()
-
-
-def compact(text, limit=6000):
-    if not text:
-        return ""
-
-    if len(text) <= limit:
-        return text
-
-    half = limit // 2
-
-    return (
-        text[:half]
-        + "\n\n...[TRUNCATED BY HARNESS]...\n\n"
-        + text[-half:]
-    )
-
-
-
-
-def extract_code(text):
-    text = text.strip()
-
-    fenced = re.search(
-        r"```(?:csharp|cs|python|typescript|javascript|"
-        r"java|rust|go|xml|json)?\s*\n?(.*?)```",
-        text,
-        flags=re.IGNORECASE | re.DOTALL
-    )
-
-    if fenced:
-        text = fenced.group(1)
-
-    text = re.sub(
-        r"^```[A-Za-z0-9_+\-]*\s*",
-        "",
-        text
-    )
-
-    text = re.sub(
-        r"\s*```$",
-        "",
-        text
-    )
-
-    return text.strip() + "\n"
-
-
 
 
 
@@ -146,105 +100,6 @@ def extract_code(text):
 
 
 
-def find_class_body_end(
-    content,
-    class_name=None
-):
-    """
-    Finds the closing brace of the selected C# class.
-
-    If class_name is not supplied, use the last class in
-    the source file. Good enough for this benchmark and
-    deterministic.
-    """
-
-    class_matches = list(
-        re.finditer(
-            r"\bclass\s+"
-            r"([A-Za-z_][A-Za-z0-9_]*)",
-            content
-        )
-    )
-
-    if not class_matches:
-        return None
-
-    selected = None
-
-    if class_name:
-        for match in class_matches:
-            if match.group(1) == class_name:
-                selected = match
-                break
-
-    if selected is None:
-        selected = class_matches[-1]
-
-    brace_start = content.find(
-        "{",
-        selected.end()
-    )
-
-    if brace_start < 0:
-        return None
-
-    depth = 0
-
-    for index in range(
-        brace_start,
-        len(content)
-    ):
-        char = content[index]
-
-        if char == "{":
-            depth += 1
-
-        elif char == "}":
-            depth -= 1
-
-            if depth == 0:
-                return index
-
-    return None
-
-
-def merge_test_snippet(
-    original_content,
-    snippet
-):
-    end_index = find_class_body_end(
-        original_content
-    )
-
-    if end_index is None:
-        raise ValueError(
-            "Could not find test class closing brace."
-        )
-
-    before = original_content[
-        :end_index
-    ].rstrip()
-
-    after = original_content[
-        end_index:
-    ]
-
-    indented_snippet = "\n".join(
-        (
-            "    " + line
-            if line.strip()
-            else ""
-        )
-        for line in snippet.strip().splitlines()
-    )
-
-    return (
-        before
-        + "\n\n"
-        + indented_snippet
-        + "\n"
-        + after
-    )
 
 
 # ============================================================

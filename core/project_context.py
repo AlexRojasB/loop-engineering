@@ -501,3 +501,31 @@ def build_context_text(
     return "\n\n".join(
         blocks
     )
+
+
+def selectable_sources(context):
+    authority = context.get(
+        "authority",
+        {}
+    )
+
+    ambiguous = authority.get(
+        "ambiguous",
+        []
+    )
+
+    if ambiguous:
+        return [
+            source["path"]
+            for source in ambiguous
+        ]
+
+    authoritative = authority.get(
+        "authoritative",
+        []
+    )
+
+    return [
+        source["path"]
+        for source in authoritative
+    ]

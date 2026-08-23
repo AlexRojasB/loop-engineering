@@ -5,6 +5,7 @@ from core.pipeline import run_pipeline
 from core.project_context import (
     build_project_context,
     format_project_context_report,
+    selectable_sources,
 )
 from core.project_runtime import configure_project_runtime
 from core.utils import load_json
@@ -42,6 +43,16 @@ def parse_args():
         action="store_true",
         help=
             "Resume from persisted project state"
+    )
+
+    parser.add_argument(
+        "--list-sources",
+        action="store_true",
+        help=(
+            "Discover and display project "
+            "task/spec/backlog/documentation sources "
+            "without running the agent"
+        )
     )
 
     return parser.parse_args()
@@ -111,6 +122,9 @@ def main():
         )
     )
 
+    if args.list_sources:
+        return 0
+
     if (
         context["status"]
         == "no_sources"
@@ -138,6 +152,18 @@ def main():
             "could represent the current work."
         )
 
+        print(
+            "Possible current work items:"
+        )
+
+        for source_path in selectable_sources(
+            context
+        ):
+            print(
+                f"  - {source_path}"
+            )
+
+        print()
         print(
             "Select one explicitly with:"
         )

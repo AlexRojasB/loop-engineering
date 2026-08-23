@@ -167,6 +167,14 @@ def run_planning_phase(
         plan["changes"]
     )
 
+    state["plan"] = plan
+    state["grouped_changes"] = grouped
+
+    save_state(
+        config,
+        state
+    )
+
     implementation_changes = [
         change
         for change

@@ -53,18 +53,116 @@ def inspect_resume_state(
                 f"Phase is not resumable: {phase}"
         }
 
-    status = git_status(
-        workspace
+    persisted_workspace = state.get(
+        "workspace"
     )
+
+    current_workspace = str(
+        Path(workspace).resolve()
+    )
+
+    if (
+        persisted_workspace
+        and str(
+            Path(
+                persisted_workspace
+            ).resolve()
+        )
+        != current_workspace
+    ):
+        return {
+            "can_resume": False,
+            "state": state,
+            "phase": phase,
+            "reason":
+                "Persisted state belongs to "
+                "a different workspace."
+        }
 
     return {
         "can_resume": True,
         "state": state,
         "phase": phase,
-        "git_status": status,
+        "git_status":
+            git_status(
+                workspace
+            ),
         "reason":
-            f"Resume candidate found at phase: {phase}"
+            f"Resume candidate found at phase: "
+            f"{phase}"
     }
+
+
+def validate_resume_request(
+    inspection,
+    selected_source
+):
+    if not inspection[
+        "can_resume"
+    ]:
+        return inspection
+
+    state = inspection[
+        "state"
+    ]
+
+    persisted_source = state.get(
+        "selected_source"
+    )
+
+    if (
+        persisted_source
+        and selected_source
+        and persisted_source
+        != selected_source
+    ):
+        result = dict(
+            inspection
+        )
+
+        result[
+            "can_resume"
+        ] = False
+
+        result[
+            "reason"
+        ] = (
+            "The requested project source differs "
+            "from the persisted work item. "
+            f"Persisted: {persisted_source}; "
+            f"requested: {selected_source}"
+        )
+
+        return result
+
+    phase = state.get(
+        "phase"
+    )
+
+    if (
+        phase != "planning"
+        and not state.get(
+            "plan"
+        )
+    ):
+        result = dict(
+            inspection
+        )
+
+        result[
+            "can_resume"
+        ] = False
+
+        result[
+            "reason"
+        ] = (
+            "Persisted state has no execution plan. "
+            "Safe resume is not possible."
+        )
+
+        return result
+
+    return inspection
 
 
 def format_resume_report(
@@ -84,14 +182,29 @@ def format_resume_report(
             f"Persisted phase: {phase}"
         )
 
-    lines.append(
-        inspection["reason"]
+    state = inspection.get(
+        "state"
     )
 
-    git_status_value = (
-        inspection.get(
-            "git_status"
+    if state:
+        selected_source = state.get(
+            "selected_source"
         )
+
+        if selected_source:
+            lines.append(
+                "Persisted source: "
+                f"{selected_source}"
+            )
+
+    lines.append(
+        inspection[
+            "reason"
+        ]
+    )
+
+    git_status_value = inspection.get(
+        "git_status"
     )
 
     if git_status_value is not None:
@@ -111,3 +224,48 @@ def format_resume_report(
     return "\n".join(
         lines
     )
+
+
+def rebuild_execution_plan(
+    state
+):
+    grouped = state.get(
+        "grouped_changes",
+        []
+    )
+
+    implementation_changes = [
+        change
+        for change in grouped
+        if change.get(
+            "type"
+        )
+        in (
+            "implementation",
+            "configuration"
+        )
+    ]
+
+    test_changes = [
+        change
+        for change in grouped
+        if change.get(
+            "type"
+        ) == "test"
+    ]
+
+    return {
+        "plan":
+            state.get(
+                "plan"
+            ),
+
+        "grouped":
+            grouped,
+
+        "implementation_changes":
+            implementation_changes,
+
+        "test_changes":
+            test_changes
+    }

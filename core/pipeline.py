@@ -34,6 +34,11 @@ from core.repository import (
     snapshot_files,
     write_file,
 )
+from core.resume import (
+    inspect_resume_state,
+    rebuild_execution_plan,
+    validate_resume_request,
+)
 from core.state import (
     append_history,
     default_state,
@@ -101,33 +106,93 @@ def run_pipeline(
         f"Test command: {test_command}"
     )
 
-    if not ensure_clean_baseline(
-        workspace
-    ):
-        return False
-
-    state = default_state(
-        task
+    resume_requested = bool(
+        config.get(
+            "resume",
+            False
+        )
     )
 
-    state["workspace"] = workspace
-    state["selected_source"] = config.get(
-        "selected_source"
-    )
-    state["agent_version"] = version
+    if resume_requested:
+        inspection = inspect_resume_state(
+            config,
+            workspace
+        )
 
-    save_state(
-        config,
-        state
-    )
+        inspection = validate_resume_request(
+            inspection,
+            config.get(
+                "selected_source"
+            )
+        )
 
-    append_history(
-        config,
-        "run_started",
-        {
-            "version": version
-        }
-    )
+        if not inspection[
+            "can_resume"
+        ]:
+            print()
+            print(
+                "RESUME REJECTED"
+            )
+            print(
+                inspection[
+                    "reason"
+                ]
+            )
+            return False
+
+        state = inspection[
+            "state"
+        ]
+
+        print()
+        print(
+            "Resuming persisted execution."
+        )
+        print(
+            f"Resume phase: "
+            f"{state.get('phase')}"
+        )
+
+        append_history(
+            config,
+            "run_resumed",
+            {
+                "version": version,
+                "phase":
+                    state.get(
+                        "phase"
+                    )
+            }
+        )
+
+    else:
+        if not ensure_clean_baseline(
+            workspace
+        ):
+            return False
+
+        state = default_state(
+            task
+        )
+
+        state["workspace"] = workspace
+        state["selected_source"] = config.get(
+            "selected_source"
+        )
+        state["agent_version"] = version
+
+        save_state(
+            config,
+            state
+        )
+
+        append_history(
+            config,
+            "run_started",
+            {
+                "version": version
+            }
+        )
 
     print()
     print("=" * 60)
@@ -162,39 +227,84 @@ def run_pipeline(
         ]
     )
 
-    contract = (
-        run_test_contract_phase(
+    if (
+        resume_requested
+        and resume_phase
+        in (
+            "tests_frozen",
+            "implementation",
+            "build",
+            "tests",
+            "review",
+        )
+    ):
+        contract = None
+
+    else:
+        contract = (
+            run_test_contract_phase(
+                config,
+                workspace,
+                task,
+                state,
+                implementation_changes,
+                test_changes
+            )
+        )
+
+        if not contract:
+            return False
+
+    if (
+        not resume_requested
+        or resume_phase
+        in (
+            None,
+            "planning",
+            "tests_frozen",
+        )
+    ):
+        test_snapshot = (
+            contract[
+                "test_snapshot"
+            ]
+            if contract
+            else {}
+        )
+
+        if not run_expected_red_phase(
+            config,
+            workspace,
+            state,
+            test_snapshot,
+            test_command
+        ):
+            return False
+
+    if (
+        not resume_requested
+        or resume_phase
+        in (
+            None,
+            "planning",
+            "tests_frozen",
+        )
+    ):
+        if not run_implementation_phase(
             config,
             workspace,
             task,
             state,
-            implementation_changes,
-            test_changes
+            implementation_changes
+        ):
+            return False
+
+    else:
+        print()
+        print(
+            "Preserving existing production "
+            "changes from interrupted run."
         )
-    )
-
-    if not contract:
-        return False
-
-    if not run_expected_red_phase(
-        config,
-        workspace,
-        state,
-        contract[
-            "test_snapshot"
-        ],
-        test_command
-    ):
-        return False
-
-    if not run_implementation_phase(
-        config,
-        workspace,
-        task,
-        state,
-        implementation_changes
-    ):
-        return False
 
     if not run_build_phase(
         config,

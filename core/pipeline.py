@@ -23,6 +23,7 @@ from core.state import (
     default_state,
     mark_phase_completed,
     mark_phase_started,
+    mark_run_failed,
     phase_status,
     save_state,
 )
@@ -375,6 +376,13 @@ def run_pipeline(
             workspace
         )
 
+        mark_run_failed(
+            config,
+            state,
+            "Build did not converge.",
+            rolled_back=True
+        )
+
         return False
 
     state["build"] = "pass"
@@ -410,6 +418,13 @@ def run_pipeline(
 
         git_restore_all(
             workspace
+        )
+
+        mark_run_failed(
+            config,
+            state,
+            "Tests did not converge.",
+            rolled_back=True
         )
 
         return False

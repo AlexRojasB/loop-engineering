@@ -24,7 +24,8 @@ def repair_prompt(
     task,
     file_change,
     current_content,
-    failure
+    failure,
+    frozen_tests
 ):
     requirements = "\n".join(
         f"- {reason}"
@@ -38,6 +39,7 @@ def repair_prompt(
         target=file_change["path"],
         requirements=requirements,
         current_content=current_content,
+        frozen_tests=frozen_tests,
         failure=failure
     )
 
@@ -76,6 +78,25 @@ def run_test_phase(
 
     best_score = failure_score(
         tests["output"]
+    )
+
+    frozen_test_blocks = []
+
+    for change in grouped_changes:
+        if change["type"] != "test":
+            continue
+
+        frozen_test_blocks.append(
+            "===== FROZEN TEST FILE: "
+            f"{change['path']} =====\n"
+            + read_file(
+                workspace,
+                change["path"]
+            )
+        )
+
+    frozen_tests = "\n\n".join(
+        frozen_test_blocks
     )
 
     for attempt in range(
@@ -203,6 +224,10 @@ def run_test_phase(
                     ),
                     compact(
                         tests["output"]
+                    ),
+                    compact(
+                        frozen_tests,
+                        10000
                     )
                 )
             )

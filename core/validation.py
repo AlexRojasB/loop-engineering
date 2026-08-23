@@ -275,20 +275,19 @@ def choose_repair_targets(
     grouped_changes,
     tests_frozen
 ):
-    ownership = (
-        classify_failure_owner(
-            output,
-            workspace,
-            grouped_changes
-        )
+    failure = classify_validation_failure(
+        output,
+        workspace,
+        grouped_changes
     )
 
-    owner = ownership[
+    owner = failure[
         "owner"
     ]
 
     if (
-        owner == "test"
+        failure["kind"]
+        == "test_compile_failure"
         and tests_frozen
     ):
         return {
@@ -296,73 +295,134 @@ def choose_repair_targets(
                 "reject_frozen_test_contract",
             "targets": [],
             "ownership":
-                ownership
+                failure
         }
 
     if owner == "implementation":
         targets = [
             change
-            for change
-            in grouped_changes
+            for change in grouped_changes
             if change["type"]
             == "implementation"
         ]
 
         return {
-            "action":
-                "repair",
-            "targets":
-                targets,
-            "ownership":
-                ownership
+            "action": "repair",
+            "targets": targets,
+            "ownership": failure
         }
 
     if owner == "configuration":
         targets = [
             change
-            for change
-            in grouped_changes
+            for change in grouped_changes
             if change["type"]
             == "configuration"
         ]
 
         return {
-            "action":
-                "repair",
-            "targets":
-                targets,
-            "ownership":
-                ownership
+            "action": "repair",
+            "targets": targets,
+            "ownership": failure
         }
 
-    if owner == "mixed":
-        targets = [
-            change
-            for change
-            in grouped_changes
-            if change["type"]
-            != "test"
-        ]
+    targets = [
+        change
+        for change in grouped_changes
+        if change["type"] != "test"
+    ]
+
+    return {
+        "action": "repair",
+        "targets": targets,
+        "ownership": failure
+    }
+
+
+def classify_validation_failure(
+    output,
+    workspace,
+    grouped_changes
+):
+    """
+    Determine both failure kind and logical owner.
+
+    Important distinction:
+
+    - A compiler error originating in a test file may indicate
+      a broken frozen test contract.
+    - A runtime assertion failure naturally points to a test file,
+      but normally means production behavior is incorrect.
+    """
+
+    has_compiler_error = bool(
+        re.search(
+            r"\berror\s+"
+            r"(?:CS|MSB|NU|NETSDK)\d+",
+            output,
+            flags=re.IGNORECASE
+        )
+    )
+
+    has_test_failure = (
+        "Assert." in output
+        or "Assert.False() Failure" in output
+        or "Assert.True() Failure" in output
+        or "[FAIL]" in output
+        or "Failed!" in output
+    )
+
+    ownership = classify_failure_owner(
+        output,
+        workspace,
+        grouped_changes
+    )
+
+    if has_test_failure and not has_compiler_error:
+        return {
+            "kind": "behavior_failure",
+            "owner": "implementation",
+            "paths": ownership.get(
+                "paths",
+                []
+            ),
+            "reason":
+                "Executable tests failed assertions; "
+                "the frozen contract is valid and production "
+                "behavior does not satisfy it."
+        }
+
+    if has_compiler_error:
+        if ownership["owner"] == "test":
+            return {
+                "kind": "test_compile_failure",
+                "owner": "test",
+                "paths": ownership.get(
+                    "paths",
+                    []
+                ),
+                "reason":
+                    "Compiler failure originates from the test surface."
+            }
 
         return {
-            "action":
-                "repair",
-            "targets":
-                targets,
-            "ownership":
-                ownership
+            "kind": "production_compile_failure",
+            "owner": ownership["owner"],
+            "paths": ownership.get(
+                "paths",
+                []
+            ),
+            "reason":
+                "Compilation failed outside the frozen test contract."
         }
 
     return {
-        "action":
-            "repair",
-        "targets": [
-            change
-            for change
-            in grouped_changes
-            if change["type"]
-            != "test"
-        ],
-        "ownership":
-            ownership
+        "kind": "unknown",
+        "owner": ownership["owner"],
+        "paths": ownership.get(
+            "paths",
+            []
+        ),
+        "reason":
+            "Failure could not be classified confidently."
     }

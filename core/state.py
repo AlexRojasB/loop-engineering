@@ -217,3 +217,33 @@ def phase_status(
         phase,
         "pending"
     )
+
+
+def mark_run_failed(
+    config,
+    state,
+    reason,
+    rolled_back=False
+):
+    state["phase"] = "failed"
+    state["current_phase"] = "failed"
+    state["phase_status"] = "failed"
+    state["failure_reason"] = reason
+    state["rolled_back"] = bool(
+        rolled_back
+    )
+
+    save_state(
+        config,
+        state
+    )
+
+    append_history(
+        config,
+        "run_failed",
+        {
+            "reason": reason,
+            "rolled_back":
+                bool(rolled_back)
+        }
+    )

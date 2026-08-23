@@ -44,6 +44,16 @@ def inspect_resume_state(
                 "The previous run already completed."
         }
 
+    if phase == "failed":
+        return {
+            "can_resume": False,
+            "state": state,
+            "phase": phase,
+            "reason":
+                "The previous run failed and its "
+                "workspace changes were rolled back."
+        }
+
     if phase not in SAFE_RESUME_PHASES:
         return {
             "can_resume": False,

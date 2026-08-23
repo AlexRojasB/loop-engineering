@@ -111,6 +111,33 @@ def run_test_phase(
             f"TEST REPAIR {attempt}"
         )
 
+        escalation_after = config.get(
+            "escalation_after_test_repairs",
+            2
+        )
+
+        if attempt > escalation_after:
+            repair_model = config.get(
+                "escalation_model",
+                config["coder_model"]
+            )
+
+            repair_role = "ESCALATION"
+
+        else:
+            repair_model = config[
+                "coder_model"
+            ]
+
+            repair_role = "CODER"
+
+        print(
+            f"Repair role: {repair_role}"
+        )
+        print(
+            f"Repair model: {repair_model}"
+        )
+
         routing = choose_repair_targets(
             tests["output"],
             workspace,
@@ -212,9 +239,28 @@ def run_test_phase(
 
             path = change["path"]
 
+            repair_failure = compact(
+                tests["output"]
+            )
+
+            if repair_role == "ESCALATION":
+                repair_failure = (
+                    "ESCALATED REPAIR.\n\n"
+                    "Previous production repair attempts "
+                    "did not reduce this failure.\n"
+                    "Reason carefully about the business "
+                    "state transition and identify the "
+                    "root cause before producing the "
+                    "complete corrected file.\n"
+                    "Do not remove unrelated production "
+                    "code or the executable entry point."
+                    "\n\n"
+                    + repair_failure
+                )
+
             result = call_model(
                 config,
-                config["coder_model"],
+                repair_model,
                 repair_prompt(
                     task,
                     change,
@@ -222,9 +268,7 @@ def run_test_phase(
                         workspace,
                         path
                     ),
-                    compact(
-                        tests["output"]
-                    ),
+                    repair_failure,
                     compact(
                         frozen_tests,
                         10000

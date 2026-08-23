@@ -132,7 +132,11 @@ def run_pipeline(
         config,
         workspace,
         task,
-        state
+        state,
+        config.get(
+            "project_context",
+            {}
+        )
     )
 
     if not planning:

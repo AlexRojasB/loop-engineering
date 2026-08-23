@@ -1,5 +1,6 @@
 import json
 
+from core.context import build_project_planner_context
 from core.models import call_model
 from core.planning import (
     group_changes_by_file,
@@ -15,12 +16,60 @@ from core.state import (
 
 def planner_prompt(
     task,
-    files
+    files,
+    project_context
 ):
+    context = build_project_planner_context(
+        task,
+        project_context,
+        files
+    )
+
+    authoritative_text = "\n\n".join(
+        (
+            f"Source: {item['path']}\n"
+            f"Category: {item['category']}\n"
+            f"{item['content']}"
+        )
+        for item in context[
+            "authoritative_context"
+        ]
+    )
+
+    supporting_text = "\n\n".join(
+        (
+            f"Source: {item['path']}\n"
+            f"Category: {item['category']}\n"
+            f"{item['content']}"
+        )
+        for item in context[
+            "supporting_context"
+        ]
+    )
+
+    if not authoritative_text:
+        authoritative_text = (
+            "No additional authoritative "
+            "project context."
+        )
+
+    if not supporting_text:
+        supporting_text = (
+            "No supporting project context."
+        )
+
     return render_prompt(
         "planner.md",
-        task=task,
-        files="\n".join(files)
+        task=context["task"],
+        authoritative_context=
+            authoritative_text,
+        supporting_context=
+            supporting_text,
+        files="\n".join(
+            context[
+                "repository_files"
+            ]
+        )
     )
 
 
@@ -28,7 +77,8 @@ def run_planning_phase(
     config,
     workspace,
     task,
-    state
+    state,
+    project_context
 ):
     print()
     print("=" * 60)
@@ -51,7 +101,8 @@ def run_planning_phase(
         config["planner_model"],
         planner_prompt(
             task,
-            files
+            files,
+            project_context
         ),
         json_mode=True
     )
@@ -131,8 +182,7 @@ def run_planning_phase(
         change
         for change
         in grouped
-        if change["type"]
-        == "test"
+        if change["type"] == "test"
     ]
 
     if not implementation_changes:

@@ -1,40 +1,84 @@
-import sys
+import argparse
 from pathlib import Path
 
 from core.pipeline import run_pipeline
+from core.project_context import (
+    build_project_context,
+    format_project_context_report,
+)
+from core.project_runtime import configure_project_runtime
 from core.utils import load_json
 
 
-VERSION = "2.5.0"
+VERSION = "2.5.1"
 
 HARNESS_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = HARNESS_DIR / "config.json"
-TASK_PATH = HARNESS_DIR / "TASK.md"
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description=
+            "Local autonomous engineering agent"
+    )
+
+    parser.add_argument(
+        "project",
+        help=
+            "Path to the project repository"
+    )
+
+    parser.add_argument(
+        "--spec",
+        help=(
+            "Explicit project source/spec to use "
+            "as the current work item. "
+            "Path is relative to the project."
+        )
+    )
+
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help=
+            "Resume from persisted project state"
+    )
+
+    return parser.parse_args()
+
+
+def resolve_project(
+    path_value
+):
+    project = Path(
+        path_value
+    ).expanduser().resolve()
+
+    if not project.exists():
+        raise ValueError(
+            f"Project path does not exist: "
+            f"{project}"
+        )
+
+    if not project.is_dir():
+        raise ValueError(
+            f"Project path is not a directory: "
+            f"{project}"
+        )
+
+    return project
 
 
 def main():
-    if len(sys.argv) != 2:
-        print(
-            "Usage: python agent.py <project-path>"
-        )
-        return 1
+    args = parse_args()
 
-    project_path = Path(
-        sys.argv[1]
-    ).expanduser().resolve()
-
-    if not project_path.exists():
-        print(
-            f"Project path does not exist: "
-            f"{project_path}"
+    try:
+        project = resolve_project(
+            args.project
         )
-        return 1
 
-    if not project_path.is_dir():
-        print(
-            f"Project path is not a directory: "
-            f"{project_path}"
-        )
+    except ValueError as exc:
+        print(exc)
         return 1
 
     config = load_json(
@@ -42,17 +86,91 @@ def main():
     )
 
     config["workspace"] = str(
-        project_path
+        project
     )
 
-    if not TASK_PATH.exists():
-        print(
-            f"Task file does not exist: "
-            f"{TASK_PATH}"
+    config = configure_project_runtime(
+        config,
+        project
+    )
+
+    config["resume"] = bool(
+        args.resume
+    )
+
+    context = build_project_context(
+        project,
+        selected_source_path=
+            args.spec
+    )
+
+    print()
+    print(
+        format_project_context_report(
+            context
         )
+    )
+
+    if (
+        context["status"]
+        == "no_sources"
+    ):
+        print()
+        print(
+            "No task/spec/backlog/documentation "
+            "sources were discovered."
+        )
+
+        print(
+            "Add a project source document "
+            "before running autonomously."
+        )
+
         return 1
 
-    task = TASK_PATH.read_text()
+    if (
+        context["status"]
+        == "ambiguous"
+    ):
+        print()
+        print(
+            "Multiple authoritative sources "
+            "could represent the current work."
+        )
+
+        print(
+            "Select one explicitly with:"
+        )
+
+        print(
+            "  python agent.py "
+            "<project> --spec <path>"
+        )
+
+        return 1
+
+    if (
+        context["status"]
+        == "selected_source_not_found"
+    ):
+        print()
+        print(
+            context["message"]
+        )
+
+        return 1
+
+    current_work = context[
+        "current_work"
+    ]
+
+    task = current_work[
+        "content"
+    ]
+
+    config[
+        "project_context"
+    ] = context
 
     success = run_pipeline(
         config,
@@ -66,6 +184,7 @@ def main():
             f"AGENT {VERSION} "
             "PIPELINE DID NOT COMPLETE"
         )
+
         return 1
 
     return 0

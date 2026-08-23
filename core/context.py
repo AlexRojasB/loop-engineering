@@ -214,3 +214,47 @@ def compact_context(
         for key, value
         in context.items()
     }
+
+
+def build_project_planner_context(
+    task,
+    project_context,
+    repository_files
+):
+    authoritative = []
+
+    for item in project_context.get(
+        "authoritative_context",
+        []
+    ):
+        authoritative.append(
+            {
+                "path": item["path"],
+                "category": item["category"],
+                "content": item["content"]
+            }
+        )
+
+    supporting = []
+
+    for item in project_context.get(
+        "supporting_context",
+        []
+    ):
+        supporting.append(
+            {
+                "path": item["path"],
+                "category": item["category"],
+                "content": item["content"]
+            }
+        )
+
+    return {
+        "task": task,
+        "repository_files":
+            repository_files,
+        "authoritative_context":
+            authoritative,
+        "supporting_context":
+            supporting
+    }

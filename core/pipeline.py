@@ -1,71 +1,33 @@
-import json
-
-from core.phases.planning_phase import run_planning_phase
-from core.phases.test_contract_phase import run_test_contract_phase
+from core.phases.build_phase import run_build_phase
 from core.phases.expected_red_phase import run_expected_red_phase
 from core.phases.implementation_phase import run_implementation_phase
-from core.phases.build_phase import run_build_phase
+from core.phases.planning_phase import run_planning_phase
 from core.phases.review_phase import run_review_phase
+from core.phases.test_contract_phase import run_test_contract_phase
 from core.phases.test_phase import run_test_phase
 
-from core.context import (
-    build_behavior_contract,
-    implementation_text,
-)
-from core.guards import (
-    extract_test_method_names,
-    production_guard,
-    validate_test_snippet,
-)
-from core.models import call_model
-from core.planning import (
-    group_changes_by_file,
-    normalize_plan,
-)
-from core.prompts import render_prompt
 from core.repository import (
     discover_files,
     ensure_clean_baseline,
-    git_diff,
     git_restore_all,
-    read_file,
-    restore_snapshot,
-    run_command,
-    snapshot_files,
-    write_file,
 )
+
 from core.resume import (
     inspect_resume_state,
     rebuild_execution_plan,
     validate_resume_request,
 )
+
 from core.state import (
     append_history,
     default_state,
+    mark_phase_completed,
+    mark_phase_started,
+    phase_status,
     save_state,
 )
-from core.test_merge import merge_test_snippet
-from core.utils import (
-    compact,
-    extract_code,
-)
+
 from languages import detect_adapter
-from core.validation import (
-    classify_red_state,
-    failure_score,
-    parse_test_counts,
-)
-
-
-
-
-
-
-
-
-
-
-
 
 
 def run_pipeline(
@@ -73,9 +35,11 @@ def run_pipeline(
     task,
     version
 ):
-    workspace = config[
-        "workspace"
-    ]
+    workspace = config["workspace"]
+
+    # --------------------------------------------------------
+    # Repository / language discovery
+    # --------------------------------------------------------
 
     repository_files = discover_files(
         workspace
@@ -106,12 +70,18 @@ def run_pipeline(
         f"Test command: {test_command}"
     )
 
+    # --------------------------------------------------------
+    # New run vs resume
+    # --------------------------------------------------------
+
     resume_requested = bool(
         config.get(
             "resume",
             False
         )
     )
+
+    resume_phase = None
 
     if resume_requested:
         inspection = inspect_resume_state(
@@ -130,27 +100,44 @@ def run_pipeline(
             "can_resume"
         ]:
             print()
-            print(
-                "RESUME REJECTED"
-            )
+            print("RESUME REJECTED")
             print(
                 inspection[
                     "reason"
                 ]
             )
+
             return False
 
         state = inspection[
             "state"
         ]
 
+        resume_phase = state.get(
+            "current_phase",
+            state.get(
+                "phase"
+            )
+        )
+
+        resume_phase_status = state.get(
+            "phase_status",
+            "completed"
+        )
+
         print()
         print(
             "Resuming persisted execution."
         )
+
         print(
             f"Resume phase: "
-            f"{state.get('phase')}"
+            f"{resume_phase}"
+        )
+
+        print(
+            f"Resume phase status: "
+            f"{resume_phase_status}"
         )
 
         append_history(
@@ -158,14 +145,13 @@ def run_pipeline(
             "run_resumed",
             {
                 "version": version,
-                "phase":
-                    state.get(
-                        "phase"
-                    )
+                "phase": resume_phase
             }
         )
 
     else:
+        resume_phase_status = None
+
         if not ensure_clean_baseline(
             workspace
         ):
@@ -176,10 +162,16 @@ def run_pipeline(
         )
 
         state["workspace"] = workspace
-        state["selected_source"] = config.get(
-            "selected_source"
+
+        state["selected_source"] = (
+            config.get(
+                "selected_source"
+            )
         )
-        state["agent_version"] = version
+
+        state["agent_version"] = (
+            version
+        )
 
         save_state(
             config,
@@ -199,67 +191,100 @@ def run_pipeline(
     print(f"AGENT {version}")
     print("=" * 60)
 
-    planning = run_planning_phase(
-        config,
-        workspace,
-        task,
-        state,
-        config.get(
-            "project_context",
-            {}
-        )
-    )
-
-    if not planning:
-        return False
-
-    plan = planning["plan"]
-
-    implementation_changes = (
-        planning[
-            "implementation_changes"
-        ]
-    )
-
-    test_changes = (
-        planning[
-            "test_changes"
-        ]
-    )
+    # --------------------------------------------------------
+    # PHASE 1 - Planning
+    # --------------------------------------------------------
 
     if (
         resume_requested
         and resume_phase
-        in (
-            "tests_frozen",
-            "implementation",
-            "build",
-            "tests",
-            "review",
-        )
+        != "planning"
     ):
-        contract = None
+        planning = rebuild_execution_plan(
+            state
+        )
+
+        print()
+        print(
+            "Using persisted execution plan."
+        )
 
     else:
-        contract = (
-            run_test_contract_phase(
-                config,
-                workspace,
-                task,
-                state,
-                implementation_changes,
-                test_changes
+        planning = run_planning_phase(
+            config,
+            workspace,
+            task,
+            state,
+            config.get(
+                "project_context",
+                {}
             )
+        )
+
+        if not planning:
+            return False
+
+    plan = planning[
+        "plan"
+    ]
+
+    grouped_changes = planning[
+        "grouped"
+    ]
+
+    implementation_changes = planning[
+        "implementation_changes"
+    ]
+
+    test_changes = planning[
+        "test_changes"
+    ]
+
+    if not plan:
+        print(
+            "Persisted execution plan "
+            "is missing."
+        )
+        return False
+
+    # --------------------------------------------------------
+    # PHASE 2 - Test contract
+    # --------------------------------------------------------
+
+    contract = None
+
+    if (
+        not resume_requested
+        or resume_phase
+        == "planning"
+    ):
+        contract = run_test_contract_phase(
+            config,
+            workspace,
+            task,
+            state,
+            implementation_changes,
+            test_changes
         )
 
         if not contract:
             return False
 
+    else:
+        print()
+        print(
+            "Preserving frozen test contract "
+            "from interrupted run."
+        )
+
+    # --------------------------------------------------------
+    # PHASE 3 - Expected RED
+    # --------------------------------------------------------
+
     if (
         not resume_requested
         or resume_phase
         in (
-            None,
             "planning",
             "tests_frozen",
         )
@@ -281,14 +306,33 @@ def run_pipeline(
         ):
             return False
 
+    else:
+        print()
+        print(
+            "Expected RED was already passed "
+            "in the interrupted run."
+        )
+
+    # --------------------------------------------------------
+    # PHASE 4 - Implementation
+    # --------------------------------------------------------
+
+    implementation_incomplete = (
+        resume_requested
+        and resume_phase
+        == "implementation"
+        and resume_phase_status
+        != "completed"
+    )
+
     if (
         not resume_requested
         or resume_phase
         in (
-            None,
             "planning",
             "tests_frozen",
         )
+        or implementation_incomplete
     ):
         if not run_implementation_phase(
             config,
@@ -305,6 +349,16 @@ def run_pipeline(
             "Preserving existing production "
             "changes from interrupted run."
         )
+
+    # --------------------------------------------------------
+    # PHASE 5 - Build
+    # --------------------------------------------------------
+
+    mark_phase_started(
+        config,
+        state,
+        "build"
+    )
 
     if not run_build_phase(
         config,
@@ -324,9 +378,21 @@ def run_pipeline(
         return False
 
     state["build"] = "pass"
-    save_state(
+
+    mark_phase_completed(
         config,
-        state
+        state,
+        "build"
+    )
+
+    # --------------------------------------------------------
+    # PHASE 6 - Tests
+    # --------------------------------------------------------
+
+    mark_phase_started(
+        config,
+        state,
+        "tests"
     )
 
     if not run_test_phase(
@@ -334,7 +400,7 @@ def run_pipeline(
         workspace,
         task,
         state,
-        planning["grouped"],
+        grouped_changes,
         implementation_changes,
         test_command
     ):
@@ -347,6 +413,22 @@ def run_pipeline(
         )
 
         return False
+
+    mark_phase_completed(
+        config,
+        state,
+        "tests"
+    )
+
+    # --------------------------------------------------------
+    # PHASE 7 - Final review
+    # --------------------------------------------------------
+
+    mark_phase_started(
+        config,
+        state,
+        "review"
+    )
 
     if not run_review_phase(
         config,
@@ -361,12 +443,29 @@ def run_pipeline(
 
         return False
 
+    mark_phase_completed(
+        config,
+        state,
+        "review"
+    )
+
+    state["phase"] = "completed"
+    state["current_phase"] = "completed"
+    state["phase_status"] = "completed"
+
+    save_state(
+        config,
+        state
+    )
+
     print()
     print("=" * 60)
+
     print(
         f"FULL AGENT {version} "
         "PIPELINE PASSED"
     )
+
     print("=" * 60)
 
     print()

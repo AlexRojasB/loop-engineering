@@ -6,6 +6,8 @@ from core.repository import (
 )
 from core.state import (
     append_history,
+    mark_phase_completed,
+    mark_phase_started,
     save_state,
 )
 from core.utils import compact
@@ -23,6 +25,12 @@ def run_expected_red_phase(
     print("=" * 60)
     print("PHASE 3 - EXPECTED RED")
     print("=" * 60)
+
+    mark_phase_started(
+        config,
+        state,
+        "expected_red"
+    )
 
     result = run_command(
         workspace,
@@ -85,9 +93,10 @@ def run_expected_red_phase(
         "expected_red_confirmed"
     ] = True
 
-    save_state(
+    mark_phase_completed(
         config,
-        state
+        state,
+        "expected_red"
     )
 
     return True

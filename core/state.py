@@ -115,3 +115,105 @@ def read_history(config):
             )
 
     return events
+
+
+PIPELINE_PHASES = (
+    "planning",
+    "test_contract",
+    "expected_red",
+    "implementation",
+    "build",
+    "tests",
+    "review",
+)
+
+
+def ensure_checkpoints(state):
+    checkpoints = state.setdefault(
+        "checkpoints",
+        {}
+    )
+
+    for phase in PIPELINE_PHASES:
+        checkpoints.setdefault(
+            phase,
+            "pending"
+        )
+
+    return checkpoints
+
+
+def mark_phase_started(
+    config,
+    state,
+    phase
+):
+    checkpoints = ensure_checkpoints(
+        state
+    )
+
+    checkpoints[
+        phase
+    ] = "started"
+
+    state[
+        "current_phase"
+    ] = phase
+
+    state[
+        "phase_status"
+    ] = "started"
+
+    state[
+        "phase"
+    ] = phase
+
+    save_state(
+        config,
+        state
+    )
+
+
+def mark_phase_completed(
+    config,
+    state,
+    phase
+):
+    checkpoints = ensure_checkpoints(
+        state
+    )
+
+    checkpoints[
+        phase
+    ] = "completed"
+
+    state[
+        "current_phase"
+    ] = phase
+
+    state[
+        "phase_status"
+    ] = "completed"
+
+    state[
+        "phase"
+    ] = phase
+
+    save_state(
+        config,
+        state
+    )
+
+
+def phase_status(
+    state,
+    phase
+):
+    checkpoints = ensure_checkpoints(
+        state
+    )
+
+    return checkpoints.get(
+        phase,
+        "pending"
+    )

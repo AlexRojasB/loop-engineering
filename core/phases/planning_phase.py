@@ -10,6 +10,8 @@ from core.prompts import render_prompt
 from core.repository import discover_files
 from core.state import (
     append_history,
+    mark_phase_completed,
+    mark_phase_started,
     save_state,
 )
 
@@ -85,11 +87,10 @@ def run_planning_phase(
     print("PHASE 1 - PLANNING")
     print("=" * 60)
 
-    state["phase"] = "planning"
-
-    save_state(
+    mark_phase_started(
         config,
-        state
+        state,
+        "planning"
     )
 
     files = discover_files(
@@ -152,6 +153,12 @@ def run_planning_phase(
         config,
         "plan_created",
         plan
+    )
+
+    mark_phase_completed(
+        config,
+        state,
+        "planning"
     )
 
     if plan[

@@ -15,6 +15,8 @@ from core.repository import (
 )
 from core.state import (
     append_history,
+    mark_phase_completed,
+    mark_phase_started,
     save_state,
 )
 from core.test_merge import merge_test_snippet
@@ -88,13 +90,10 @@ def run_test_contract_phase(
     )
     print("=" * 60)
 
-    state[
-        "phase"
-    ] = "test_generation"
-
-    save_state(
+    mark_phase_started(
         config,
-        state
+        state,
+        "test_contract"
     )
 
     implementation_context = {}
@@ -360,9 +359,15 @@ def run_test_contract_phase(
         "tests_frozen"
     ] = True
 
-    state[
-        "phase"
-    ] = "tests_frozen"
+    mark_phase_completed(
+        config,
+        state,
+        "test_contract"
+    )
+
+    state["phase"] = "tests_frozen"
+    state["current_phase"] = "tests_frozen"
+    state["phase_status"] = "completed"
 
     save_state(
         config,

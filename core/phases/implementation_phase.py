@@ -8,7 +8,11 @@ from core.repository import (
     snapshot_files,
     write_file,
 )
-from core.state import save_state
+from core.state import (
+    mark_phase_completed,
+    mark_phase_started,
+    save_state,
+)
 from core.utils import extract_code
 
 
@@ -41,11 +45,10 @@ def run_implementation_phase(
     print("PHASE 4 - IMPLEMENTATION")
     print("=" * 60)
 
-    state["phase"] = "implementation"
-
-    save_state(
+    mark_phase_started(
         config,
-        state
+        state,
+        "implementation"
     )
 
     snapshot = snapshot_files(
@@ -118,9 +121,10 @@ def run_implementation_phase(
         "implementation_generated"
     ] = True
 
-    save_state(
+    mark_phase_completed(
         config,
-        state
+        state,
+        "implementation"
     )
 
     return True

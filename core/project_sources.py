@@ -164,6 +164,9 @@ def discover_project_sources(
         ):
             continue
 
+        if path.name.startswith(".ai-"):
+            continue
+
         if (
             path.suffix.lower()
             not in SUPPORTED_EXTENSIONS
@@ -233,3 +236,27 @@ def format_source_inventory(
     return "\n".join(
         lines
     )
+
+
+def read_project_source(
+    workspace,
+    source
+):
+    root = Path(
+        workspace
+    ).resolve()
+
+    path = (
+        root
+        / source["path"]
+    ).resolve()
+
+    if (
+        path != root
+        and root not in path.parents
+    ):
+        raise ValueError(
+            "Project source escapes workspace."
+        )
+
+    return path.read_text()

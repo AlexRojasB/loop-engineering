@@ -44,6 +44,7 @@ from core.utils import (
     compact,
     extract_code,
 )
+from languages import detect_adapter
 from core.validation import (
     classify_red_state,
     failure_score,
@@ -70,6 +71,19 @@ def run_pipeline(
     workspace = config[
         "workspace"
     ]
+
+    repository_files = discover_files(
+        workspace
+    )
+
+    adapter = detect_adapter(
+        repository_files
+    )
+
+    print(
+        f"Detected language adapter: "
+        f"{adapter.name}"
+    )
 
     if not ensure_clean_baseline(
         workspace

@@ -110,6 +110,12 @@ def run_pipeline(
         task
     )
 
+    state["workspace"] = workspace
+    state["selected_source"] = config.get(
+        "selected_source"
+    )
+    state["agent_version"] = version
+
     save_state(
         config,
         state

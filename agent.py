@@ -8,6 +8,10 @@ from core.project_context import (
     selectable_sources,
 )
 from core.project_runtime import configure_project_runtime
+from core.resume import (
+    format_resume_report,
+    inspect_resume_state,
+)
 from core.utils import load_json
 
 
@@ -51,6 +55,15 @@ def parse_args():
         help=(
             "Discover and display project "
             "task/spec/backlog/documentation sources "
+            "without running the agent"
+        )
+    )
+
+    parser.add_argument(
+        "--resume-info",
+        action="store_true",
+        help=(
+            "Display persisted resume state "
             "without running the agent"
         )
     )
@@ -108,6 +121,21 @@ def main():
     config["resume"] = bool(
         args.resume
     )
+
+    if args.resume_info:
+        inspection = inspect_resume_state(
+            config,
+            project
+        )
+
+        print()
+        print(
+            format_resume_report(
+                inspection
+            )
+        )
+
+        return 0
 
     context = build_project_context(
         project,
@@ -192,6 +220,12 @@ def main():
 
     task = current_work[
         "content"
+    ]
+
+    config[
+        "selected_source"
+    ] = current_work[
+        "path"
     ]
 
     config[

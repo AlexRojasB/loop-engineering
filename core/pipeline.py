@@ -1,5 +1,7 @@
 import json
 
+from core.phases.planning_phase import run_planning_phase
+
 from core.context import (
     build_behavior_contract,
     implementation_text,
@@ -42,13 +44,6 @@ from core.validation import (
     parse_test_counts,
 )
 
-
-def planner_prompt(task, files):
-    return render_prompt(
-        "planner.md",
-        task=task,
-        files="\n".join(files)
-    )
 
 
 def test_snippet_prompt(
@@ -157,131 +152,6 @@ def reviewer_prompt(
         diff=diff
     )
 
-
-def run_planning_phase(
-    config,
-    workspace,
-    task,
-    state
-):
-    print()
-    print("=" * 60)
-    print("PHASE 1 - PLANNING")
-    print("=" * 60)
-
-    state["phase"] = "planning"
-    save_state(
-        config,
-        state
-    )
-
-    files = discover_files(
-        workspace
-    )
-
-    planner_result = call_model(
-        config,
-        config["planner_model"],
-        planner_prompt(
-            task,
-            files
-        ),
-        json_mode=True
-    )
-
-    if not planner_result["ok"]:
-        print(
-            planner_result["error"]
-        )
-        return None
-
-    try:
-        planner_plan = json.loads(
-            planner_result["response"]
-        )
-    except json.JSONDecodeError:
-        print(
-            "Planner returned invalid JSON."
-        )
-        return None
-
-    plan = normalize_plan(
-        workspace,
-        files,
-        planner_plan
-    )
-
-    print(
-        json.dumps(
-            plan,
-            indent=2
-        )
-    )
-
-    state[
-        "planner_complete"
-    ] = True
-
-    save_state(
-        config,
-        state
-    )
-
-    append_history(
-        config,
-        "plan_created",
-        plan
-    )
-
-    if plan[
-        "dependencies_required"
-    ]:
-        print(
-            "Dependency tooling "
-            "not implemented yet."
-        )
-        return None
-
-    grouped = group_changes_by_file(
-        plan["changes"]
-    )
-
-    implementation_changes = [
-        change
-        for change in grouped
-        if change["type"]
-        in (
-            "implementation",
-            "configuration"
-        )
-    ]
-
-    test_changes = [
-        change
-        for change in grouped
-        if change["type"] == "test"
-    ]
-
-    if not implementation_changes:
-        print(
-            "No implementation changes planned."
-        )
-        return None
-
-    if not test_changes:
-        print(
-            "No test changes planned."
-        )
-        return None
-
-    return {
-        "plan": plan,
-        "grouped": grouped,
-        "implementation_changes":
-            implementation_changes,
-        "test_changes":
-            test_changes
-    }
 
 
 def run_test_contract_phase(

@@ -8,6 +8,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.models import call_model
+from core.state import (
+    append_history,
+    default_state,
+    save_state,
+)
 from core.repository import (
     discover_files,
     ensure_clean_baseline,
@@ -109,63 +114,6 @@ def extract_code(text):
     )
 
     return text.strip() + "\n"
-
-
-# ============================================================
-# STATE
-# ============================================================
-
-def default_state(task):
-    return {
-        "task": task,
-        "phase": "starting",
-        "planner_complete": False,
-        "tests_generated": False,
-        "tests_structurally_valid": False,
-        "tests_reviewed": False,
-        "tests_frozen": False,
-        "expected_red_confirmed": False,
-        "implementation_generated": False,
-        "build": "unknown",
-        "tests": {
-            "status": "unknown",
-            "passed": None,
-            "failed": None
-        },
-        "review": "pending",
-        "updated_at": now_iso()
-    }
-
-
-def save_state(config, state):
-    state["updated_at"] = now_iso()
-
-    with open(
-        config["state_file"],
-        "w"
-    ) as f:
-        json.dump(
-            state,
-            f,
-            indent=2
-        )
-
-
-def append_history(config, event, data=None):
-    entry = {
-        "timestamp": now_iso(),
-        "event": event,
-        "data": data or {}
-    }
-
-    with open(
-        config["history_file"],
-        "a"
-    ) as f:
-        f.write(
-            json.dumps(entry) + "\n"
-        )
-
 
 
 
@@ -1158,7 +1106,7 @@ def parse_test_counts(output):
 
 def main():
     config = load_json(
-        "agent-v2-config.json"
+        "config.json"
     )
 
     workspace = config[

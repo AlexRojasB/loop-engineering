@@ -2,3 +2,7 @@
 # Python
 __pycache__/
 *.py[cod]
+
+# Agent runtime
+runtime/*.json
+runtime/*.jsonl

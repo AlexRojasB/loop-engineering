@@ -1,13 +1,24 @@
 {
-  "developer_model": "qwen2.5-coder:3b",
-  "repair_model": "qwen2.5-coder:3b",
+  "planner_model": "qwen3:4b-instruct-2507-q4_K_M",
+  "coder_model": "qwen2.5-coder:7b-instruct-q4_K_M",
   "escalation_model": "qwen3:4b-instruct-2507-q4_K_M",
   "reviewer_model": "qwen3:4b-instruct-2507-q4_K_M",
-  "max_iterations": 5,
-  "project_path": "/home/alex/ai-benchmarks/order-pipeline/OrderPipeline",
-  "target_file": "Program.cs",
-  "validation_commands": [
-    "dotnet build",
-    "dotnet test ../OrderPipeline.Tests/OrderPipeline.Tests.csproj"
-  ]
+  "test_reviewer_model": "qwen3:4b-instruct-2507-q4_K_M",
+
+  "workspace": "/home/alex/ai-benchmarks/order-pipeline",
+
+  "state_file": "runtime/state.json",
+  "history_file": "runtime/history.jsonl",
+
+  "model_timeout_seconds": 420,
+  "retry_timeout_seconds": 300,
+
+  "max_test_generation_attempts": 2,
+  "max_build_repairs": 3,
+  "max_test_repairs": 4,
+
+  "validation": {
+    "build": "dotnet build OrderPipeline.slnx",
+    "test": "dotnet test OrderPipeline.slnx"
+  }
 }

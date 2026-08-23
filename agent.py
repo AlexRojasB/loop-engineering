@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.models import call_model
+from core.prompts import render_prompt
 from core.context import (
     build_behavior_contract,
     implementation_text,
@@ -256,94 +257,25 @@ def merge_test_snippet(
 # ============================================================
 
 def planner_prompt(task, files):
-    listing = "\n".join(files)
-
-    return f"""
-You are the planning agent.
-
-TASK:
-
-{task}
-
-REAL FILES:
-
-{listing}
-
-Rules:
-
-- Do not invent paths.
-- Classes may share files.
-- Every modification requires a reason.
-- Configuration changes must be justified.
-- Dependencies must be declared.
-- Plan only.
-
-Return JSON only:
-
-{{
-  "read_files": [],
-
-  "changes": [
-    {{
-      "path": "existing/path",
-      "type":
-        "implementation | test | configuration",
-      "reason": "why this file changes"
-    }}
-  ],
-
-  "configuration_changes_required": false,
-
-  "dependencies_required": [],
-
-  "coder_instruction": "..."
-}}
-"""
-
-
+    return render_prompt(
+        "planner.txt",
+        task=task,
+        files="\n".join(files)
+    )
 
 def test_snippet_prompt(
     task,
     implementation_files,
     current_test_content
 ):
-    return f"""
-You are writing ONLY NEW TEST METHODS for a TDD workflow.
-
-TASK:
-
-{task}
-
-CURRENT PRODUCTION:
-
-{implementation_text(implementation_files)}
-
-EXISTING TEST FILE:
-
-{current_test_content}
-
-Generate ONLY the new test methods required for the task.
-
-IMPORTANT:
-
-- Do NOT output the complete test file.
-- Do NOT output namespace declarations.
-- Do NOT output using statements.
-- Do NOT output a test class declaration.
-- Do NOT output production classes.
-- Do NOT output production enums.
-- Do NOT output production interfaces.
-- Do NOT implement the requested feature inside tests.
-- Preserve the existing xUnit style.
-- The production feature does NOT exist yet.
-- It is expected that the new tests initially fail.
-
-Return only one or more C# [Fact] test methods.
-
-No Markdown.
-No explanation.
-"""
-
+    return render_prompt(
+        "test_generator.txt",
+        task=task,
+        production=implementation_text(
+            implementation_files
+        ),
+        existing_tests=current_test_content
+    )
 
 def test_snippet_revision_prompt(
     task,
@@ -352,97 +284,30 @@ def test_snippet_revision_prompt(
     snippet,
     issues
 ):
-    return f"""
-Correct these NEW TEST METHODS.
-
-TASK:
-
-{task}
-
-CURRENT PRODUCTION:
-
-{implementation_text(implementation_files)}
-
-EXISTING TEST FILE:
-
-{original_test_content}
-
-CURRENT NEW TEST METHODS:
-
-{snippet}
-
-ISSUES:
-
-{json.dumps(issues, indent=2)}
-
-Return ONLY corrected new [Fact] test methods.
-
-Do not return the full test file.
-Do not redefine production types.
-Do not declare a class.
-Do not add using statements.
-Do not implement production behavior.
-No Markdown.
-No explanation.
-"""
-
+    return render_prompt(
+        "test_revision.txt",
+        task=task,
+        production=implementation_text(
+            implementation_files
+        ),
+        existing_tests=original_test_content,
+        snippet=snippet,
+        issues=str(issues)
+    )
 
 def test_review_prompt(
     task,
     implementation_files,
     merged_test_content
 ):
-    return f"""
-You are reviewing a FUTURE TEST CONTRACT in a TDD workflow.
-
-TASK:
-
-{task}
-
-CURRENT PRODUCTION:
-
-{implementation_text(implementation_files)}
-
-FULL TEST FILE AFTER DETERMINISTIC MERGE:
-
-{merged_test_content}
-
-The new production feature DOES NOT EXIST YET.
-
-That is intentional.
-
-DO NOT reject because:
-- RefundOrder does not exist yet
-- Refunded does not exist yet
-- tests currently fail
-- tests currently fail to compile because the new API is missing
-
-Review ONLY test correctness.
-
-Verify:
-
-1. Each new test maps to an actual requirement.
-2. Arrange represents the described state.
-3. Act invokes the intended feature.
-4. Assertions match the business rule.
-5. Existing tests remain intact.
-6. No production type was redefined.
-7. No unrelated behavior was invented.
-8. Successful refund verifies Paid -> Refunded.
-9. Pending cannot be refunded.
-10. Cancelled cannot be refunded.
-11. Already Refunded cannot be refunded.
-12. Unknown Guid returns false.
-
-Return JSON only:
-
-{{
-  "decision": "APPROVE or REJECT",
-  "issues": []
-}}
-"""
-
-
+    return render_prompt(
+        "test_reviewer.txt",
+        task=task,
+        production=implementation_text(
+            implementation_files
+        ),
+        tests=merged_test_content
+    )
 
 def implementation_prompt(
     task,
@@ -450,40 +315,15 @@ def implementation_prompt(
     current_content,
     frozen_tests
 ):
-    behavior_contract = build_behavior_contract(
-        task,
-        file_change
+    return render_prompt(
+        "coder.txt",
+        behavior_contract=build_behavior_contract(
+            task,
+            file_change
+        ),
+        target=file_change["path"],
+        current_content=current_content
     )
-
-    return f"""
-You are modifying a PRODUCTION source file.
-
-BEHAVIOR CONTRACT:
-
-{behavior_contract}
-
-TARGET:
-
-{file_change["path"]}
-
-CURRENT PRODUCTION FILE:
-
-{current_content}
-
-CRITICAL BOUNDARY RULES:
-
-- This is production code, NOT test code.
-- NEVER output using Xunit.
-- NEVER output [Fact], [Theory], Assert.*, or test classes.
-- Do not copy any testing-framework syntax.
-- Do not implement tests in this file.
-- Preserve the current language and architecture.
-- Implement only the requested production behavior.
-- Return the COMPLETE production file.
-- No Markdown.
-- No explanation.
-"""
-
 
 def repair_prompt(
     task,
@@ -491,85 +331,36 @@ def repair_prompt(
     current_content,
     failure
 ):
-    reasons = "\n".join(
-        f"- {r}"
-        for r
-        in file_change["reasons"]
+    requirements = "\n".join(
+        f"- {reason}"
+        for reason in file_change["reasons"]
     )
 
-    return f"""
-Repair production code.
-
-TASK:
-
-{task}
-
-TARGET:
-
-{file_change["path"]}
-
-REQUIREMENTS:
-
-{reasons}
-
-CURRENT CONTENT:
-
-{current_content}
-
-VALIDATION FAILURE:
-
-{failure}
-
-Tests are frozen.
-
-Fix production code only.
-
-Preserve existing correct behavior.
-
-Do not add dependencies.
-
-Return complete corrected target file only.
-
-No Markdown.
-No explanation.
-"""
-
+    return render_prompt(
+        "repair.txt",
+        task=task,
+        target=file_change["path"],
+        requirements=requirements,
+        current_content=current_content,
+        failure=failure
+    )
 
 def reviewer_prompt(
     task,
     plan,
     diff
 ):
-    return f"""
-You are the final reviewer.
+    import json
 
-TASK:
-
-{task}
-
-PLAN:
-
-{json.dumps(plan, indent=2)}
-
-GIT DIFF:
-
-{diff}
-
-VALIDATION:
-
-BUILD: PASS
-TESTS: PASS
-TEST CONTRACT REVIEWED: YES
-TESTS FROZEN: YES
-
-Return JSON only:
-
-{{
-  "decision": "APPROVE or REJECT",
-  "issues": []
-}}
-"""
-
+    return render_prompt(
+        "reviewer.txt",
+        task=task,
+        plan=json.dumps(
+            plan,
+            indent=2
+        ),
+        diff=diff
+    )
 
 # ============================================================
 # VALIDATION HELPERS

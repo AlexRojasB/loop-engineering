@@ -307,6 +307,59 @@ def normalize_plan(
             }
         )
 
+    if normalized[
+        "tests_required"
+    ]:
+        planned_tests = [
+            change
+            for change in normalized[
+                "changes"
+            ]
+            if change["type"] == "test"
+        ]
+
+        if not planned_tests:
+            test_candidates = [
+                path
+                for path in files
+                if (
+                    is_source_file(path)
+                    and is_test_file(path)
+                )
+            ]
+
+            if len(test_candidates) == 1:
+                resolved_test = (
+                    test_candidates[0]
+                )
+
+                print(
+                    "Planner test target repaired: "
+                    f"{resolved_test}"
+                )
+
+                normalized[
+                    "changes"
+                ].append(
+                    {
+                        "path":
+                            resolved_test,
+                        "type":
+                            "test",
+                        "reason":
+                            "Add or update tests "
+                            "for the requested "
+                            "behavior."
+                    }
+                )
+
+            elif len(test_candidates) > 1:
+                print(
+                    "Planner omitted test target "
+                    "and multiple test files exist; "
+                    "automatic repair skipped."
+                )
+
     return normalized
 
 

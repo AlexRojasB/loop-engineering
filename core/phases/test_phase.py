@@ -99,6 +99,8 @@ def run_test_phase(
         frozen_test_blocks
     )
 
+    repair_history = []
+
     for attempt in range(
         1,
         config["max_test_repairs"] + 1
@@ -243,6 +245,17 @@ def run_test_phase(
                 tests["output"]
             )
 
+            if repair_history:
+                repair_failure += (
+                    "\n\n===== PREVIOUS FAILED REPAIR ATTEMPTS =====\n"
+                    + "\n\n".join(repair_history)
+                    + "\n\nIMPORTANT:\n"
+                    "The approaches above did not improve the test result. "
+                    "Do not repeat the same implementation. Re-evaluate the "
+                    "frozen test contract and the production state-transition "
+                    "logic before producing a new repair."
+                )
+
             if repair_role == "ESCALATION":
                 repair_failure = (
                     "ESCALATED REPAIR.\n\n"
@@ -282,6 +295,8 @@ def run_test_phase(
             generated = extract_code(
                 result["response"]
             )
+
+            attempted_content = generated
 
             guard_issues = production_guard(
                 generated
@@ -352,6 +367,21 @@ def run_test_phase(
             print(
                 "No test progress. "
                 "Rolling back."
+            )
+
+            repair_history.append(
+                "Attempt "
+                + str(attempt)
+                + " produced this validation result:\n"
+                + compact(
+                    candidate["output"],
+                    4000
+                )
+                + "\n\nProduction code attempted:\n"
+                + compact(
+                    attempted_content,
+                    5000
+                )
             )
 
             restore_snapshot(

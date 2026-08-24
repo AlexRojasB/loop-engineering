@@ -86,3 +86,23 @@ If rejecting, every issue MUST describe a defect in the TEST CONTRACT itself, su
 - invalid expected result
 
 Do not report missing future implementation as an issue.
+
+## Test Setup Validity
+
+Before approving generated tests, verify that their Arrange/setup logic is valid against the existing production API.
+
+Specifically:
+
+- Trace identifiers and values used across setup operations.
+- Never assume an API uses a caller-generated identifier unless the production API explicitly accepts or returns that identifier.
+- If an entity is created with an internally generated identifier, tests must retrieve the created entity through an existing public API before invoking later operations that require its identifier.
+- Verify that every prerequisite operation actually targets the entity created by the test.
+- Verify state transitions sequentially: if a test requires Paid -> Refunded, confirm the setup can actually transition the same entity from Pending -> Paid before testing RefundOrder.
+- Do not approve a test merely because it compiles after the requested feature exists.
+- Reject tests whose Arrange phase makes the asserted behavior unreachable.
+
+When reviewing a stateful test, reason through:
+
+Arrange -> entity identity -> prerequisite transition -> action -> assertion.
+
+If any link in that chain is invalid against the existing production behavior, return REJECT and explain the setup defect.

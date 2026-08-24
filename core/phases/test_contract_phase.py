@@ -75,6 +75,21 @@ def test_review_prompt(
     )
 
 
+def semantic_test_review_prompt(
+    task,
+    implementation_files,
+    merged_test_content
+):
+    return render_prompt(
+        "test-semantic-reviewer.md",
+        task=task,
+        production=implementation_text(
+            implementation_files
+        ),
+        tests=merged_test_content
+    )
+
+
 def run_test_contract_phase(
     config,
     workspace,
@@ -266,8 +281,59 @@ def run_test_contract_phase(
                 ).upper()
                 == "APPROVE"
             ):
-                approved = True
-                break
+                semantic_model = config.get(
+                    "escalation_model",
+                    config[
+                        "test_reviewer_model"
+                    ]
+                )
+
+                semantic_review = call_model(
+                    config,
+                    semantic_model,
+                    semantic_test_review_prompt(
+                        task,
+                        implementation_context,
+                        merged
+                    ),
+                    json_mode=True
+                )
+
+                if not semantic_review["ok"]:
+                    continue
+
+                try:
+                    semantic_json = json.loads(
+                        semantic_review[
+                            "response"
+                        ]
+                    )
+
+                except json.JSONDecodeError:
+                    continue
+
+                print()
+                print(
+                    "Semantic contract audit:"
+                )
+                print(
+                    json.dumps(
+                        semantic_json,
+                        indent=2
+                    )
+                )
+
+                if (
+                    semantic_json.get(
+                        "decision",
+                        ""
+                    ).upper()
+                    == "APPROVE"
+                ):
+                    approved = True
+                    break
+
+                review_json = semantic_json
 
             revision = call_model(
                 config,

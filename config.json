@@ -4,14 +4,12 @@
   "escalation_model": "qwen3:4b-instruct-2507-q4_K_M",
   "reviewer_model": "qwen3:4b-instruct-2507-q4_K_M",
   "test_reviewer_model": "qwen3:4b-instruct-2507-q4_K_M",
-
   "state_file": "/home/alex/loop-engineering/runtime/state.json",
   "history_file": "/home/alex/loop-engineering/runtime/history.jsonl",
-
   "model_timeout_seconds": 420,
   "retry_timeout_seconds": 300,
-  "escalation_after_test_repairs":2,
-  "max_test_generation_attempts": 2,
+  "escalation_after_test_repairs": 2,
+  "max_test_generation_attempts": 4,
   "max_build_repairs": 3,
   "max_test_repairs": 4
 }

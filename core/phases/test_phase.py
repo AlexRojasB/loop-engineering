@@ -99,6 +99,12 @@ def run_test_phase(
         frozen_test_blocks
     )
 
+    print()
+    print("===== FROZEN TEST CONTRACT =====")
+    print(frozen_tests)
+    print("===== END FROZEN TEST CONTRACT =====")
+    print()
+
     repair_history = []
 
     for attempt in range(
@@ -297,6 +303,17 @@ def run_test_phase(
             )
 
             attempted_content = generated
+
+            print()
+            print("===== GENERATED TEST REPAIR =====")
+            print(f"Attempt: {attempt}")
+            print(f"Role: {repair_role}")
+            print(f"Model: {repair_model}")
+            print(f"Target: {path}")
+            print("--------------------------------")
+            print(generated)
+            print("===== END GENERATED TEST REPAIR =====")
+            print()
 
             guard_issues = production_guard(
                 generated

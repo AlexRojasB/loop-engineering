@@ -57,3 +57,27 @@ Return JSON only:
 
   "coder_instruction": "..."
 }}
+
+## Dependency discipline
+
+`dependencies_required` MUST be empty unless the authoritative task explicitly requires introducing a dependency that does not already exist in the repository.
+
+Do NOT invent repositories, services, abstractions, frameworks, packages, infrastructure components, or architectural layers.
+
+Examples of invalid invented dependencies include:
+- repositories that do not currently exist;
+- new service layers not required by the task;
+- databases or persistence abstractions not requested;
+- external packages that are unnecessary for the requested behavior.
+
+Prefer the existing production structure and existing dependencies.
+
+For small behavioral changes, state transitions, enum additions, validation rules, and methods that can be implemented using current code, return:
+
+"dependencies_required": []
+
+Only populate `dependencies_required` when BOTH are true:
+1. the authoritative task explicitly requires the dependency or capability; and
+2. the repository does not already provide it.
+
+If unsure, leave `dependencies_required` empty.

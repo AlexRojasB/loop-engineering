@@ -1,3 +1,5 @@
+from time import perf_counter
+
 from core.phases.build_phase import run_build_phase
 from core.phases.expected_red_phase import run_expected_red_phase
 from core.phases.implementation_phase import run_implementation_phase
@@ -37,6 +39,57 @@ def run_pipeline(
     version
 ):
     workspace = config["workspace"]
+
+    pipeline_started = perf_counter()
+    phase_timings = {}
+
+    def timed_phase(name, func):
+        started = perf_counter()
+
+        try:
+            return func()
+        finally:
+            phase_timings[name] = (
+                phase_timings.get(name, 0.0)
+                + perf_counter()
+                - started
+            )
+
+    def print_timing_summary():
+        total = perf_counter() - pipeline_started
+
+        print()
+        print("=" * 60)
+        print("TIMING SUMMARY")
+        print("=" * 60)
+
+        labels = [
+            ("planning", "Planning"),
+            ("test_contract", "Test Contract"),
+            ("expected_red", "Expected Red"),
+            ("implementation", "Implementation"),
+            ("build", "Build"),
+            ("tests", "Tests"),
+            ("review", "Final Review"),
+        ]
+
+        for key, label in labels:
+            if key in phase_timings:
+                print(
+                    f"{label:<24}"
+                    f"{phase_timings[key]:>10.2f}s"
+                )
+
+        print("-" * 60)
+        print(
+            f"{'Total':<24}"
+            f"{total:>10.2f}s"
+        )
+        print("=" * 60)
+
+    def finish(success):
+        print_timing_summary()
+        return success
 
     # --------------------------------------------------------
     # Repository / language discovery
@@ -108,7 +161,7 @@ def run_pipeline(
                 ]
             )
 
-            return False
+            return finish(False)
 
         state = inspection[
             "state"
@@ -156,7 +209,7 @@ def run_pipeline(
         if not ensure_clean_baseline(
             workspace
         ):
-            return False
+            return finish(False)
 
         state = default_state(
             task
@@ -211,19 +264,22 @@ def run_pipeline(
         )
 
     else:
-        planning = run_planning_phase(
-            config,
-            workspace,
-            task,
-            state,
-            config.get(
-                "project_context",
-                {}
+        planning = timed_phase(
+            "planning",
+            lambda: run_planning_phase(
+                config,
+                workspace,
+                task,
+                state,
+                config.get(
+                    "project_context",
+                    {}
+                )
             )
         )
 
         if not planning:
-            return False
+            return finish(False)
 
     plan = planning[
         "plan"
@@ -241,12 +297,20 @@ def run_pipeline(
         "test_changes"
     ]
 
+    tests_required = planning.get(
+        "tests_required",
+        plan.get(
+            "tests_required",
+            True
+        )
+    )
+
     if not plan:
         print(
             "Persisted execution plan "
             "is missing."
         )
-        return False
+        return finish(False)
 
     # --------------------------------------------------------
     # PHASE 2 - Test contract
@@ -254,64 +318,92 @@ def run_pipeline(
 
     contract = None
 
-    if (
-        not resume_requested
-        or resume_phase
-        == "planning"
-    ):
-        contract = run_test_contract_phase(
-            config,
-            workspace,
-            task,
-            state,
-            implementation_changes,
-            test_changes
-        )
+    if tests_required:
+        if (
+            not resume_requested
+            or resume_phase
+            == "planning"
+        ):
+            contract = timed_phase(
+                "test_contract",
+                lambda: run_test_contract_phase(
+                    config,
+                    workspace,
+                    task,
+                    state,
+                    implementation_changes,
+                    test_changes
+                )
+            )
 
-        if not contract:
-            return False
+            if not contract:
+                return finish(False)
+
+        else:
+            print()
+            print(
+                "Preserving frozen test contract "
+                "from interrupted run."
+            )
 
     else:
         print()
+        print("=" * 60)
+        print("PHASE 2 - TEST CONTRACT SKIPPED")
+        print("=" * 60)
         print(
-            "Preserving frozen test contract "
-            "from interrupted run."
+            "Structural change: no new "
+            "test contract required."
         )
 
     # --------------------------------------------------------
     # PHASE 3 - Expected RED
     # --------------------------------------------------------
 
-    if (
-        not resume_requested
-        or resume_phase
-        in (
-            "planning",
-            "tests_frozen",
-        )
-    ):
-        test_snapshot = (
-            contract[
-                "test_snapshot"
-            ]
-            if contract
-            else {}
-        )
-
-        if not run_expected_red_phase(
-            config,
-            workspace,
-            state,
-            test_snapshot,
-            test_command
+    if tests_required:
+        if (
+            not resume_requested
+            or resume_phase
+            in (
+                "planning",
+                "tests_frozen",
+            )
         ):
-            return False
+            test_snapshot = (
+                contract[
+                    "test_snapshot"
+                ]
+                if contract
+                else {}
+            )
+
+            if not timed_phase(
+                "expected_red",
+                lambda: run_expected_red_phase(
+                    config,
+                    workspace,
+                    state,
+                    test_snapshot,
+                    test_command
+                )
+            ):
+                return finish(False)
+
+        else:
+            print()
+            print(
+                "Expected RED was already passed "
+                "in the interrupted run."
+            )
 
     else:
         print()
+        print("=" * 60)
+        print("PHASE 3 - EXPECTED RED SKIPPED")
+        print("=" * 60)
         print(
-            "Expected RED was already passed "
-            "in the interrupted run."
+            "Existing regression tests will "
+            "still run after implementation."
         )
 
     # --------------------------------------------------------
@@ -335,14 +427,17 @@ def run_pipeline(
         )
         or implementation_incomplete
     ):
-        if not run_implementation_phase(
-            config,
-            workspace,
-            task,
-            state,
-            implementation_changes
+        if not timed_phase(
+            "implementation",
+            lambda: run_implementation_phase(
+                config,
+                workspace,
+                task,
+                state,
+                implementation_changes
+            )
         ):
-            return False
+            return finish(False)
 
     else:
         print()
@@ -361,12 +456,15 @@ def run_pipeline(
         "build"
     )
 
-    if not run_build_phase(
-        config,
-        workspace,
-        task,
-        implementation_changes,
-        build_command
+    if not timed_phase(
+        "build",
+        lambda: run_build_phase(
+            config,
+            workspace,
+            task,
+            implementation_changes,
+            build_command
+        )
     ):
         print(
             "Build did not converge."
@@ -383,7 +481,7 @@ def run_pipeline(
             rolled_back=True
         )
 
-        return False
+        return finish(False)
 
     state["build"] = "pass"
 
@@ -403,14 +501,17 @@ def run_pipeline(
         "tests"
     )
 
-    if not run_test_phase(
-        config,
-        workspace,
-        task,
-        state,
-        grouped_changes,
-        implementation_changes,
-        test_command
+    if not timed_phase(
+        "tests",
+        lambda: run_test_phase(
+            config,
+            workspace,
+            task,
+            state,
+            grouped_changes,
+            implementation_changes,
+            test_command
+        )
     ):
         print(
             "Tests did not converge."
@@ -427,7 +528,7 @@ def run_pipeline(
             rolled_back=True
         )
 
-        return False
+        return finish(False)
 
     mark_phase_completed(
         config,
@@ -445,18 +546,21 @@ def run_pipeline(
         "review"
     )
 
-    if not run_review_phase(
-        config,
-        workspace,
-        task,
-        state,
-        plan
+    if not timed_phase(
+        "review",
+        lambda: run_review_phase(
+            config,
+            workspace,
+            task,
+            state,
+            plan
+        )
     ):
         print(
             "Reviewer rejected pipeline."
         )
 
-        return False
+        return finish(False)
 
     mark_phase_completed(
         config,
@@ -489,4 +593,4 @@ def run_pipeline(
         "for human inspection."
     )
 
-    return True
+    return finish(True)

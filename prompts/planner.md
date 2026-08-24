@@ -55,6 +55,8 @@ Return JSON only:
 
   "dependencies_required": [],
 
+  "tests_required": true,
+
   "coder_instruction": "..."
 }}
 
@@ -81,3 +83,31 @@ Only populate `dependencies_required` when BOTH are true:
 2. the repository does not already provide it.
 
 If unsure, leave `dependencies_required` empty.
+
+
+## Test requirement decision
+
+Set `"tests_required": true` when the task introduces or changes observable behavior, including:
+
+- business rules;
+- state transitions;
+- validations;
+- public method behavior;
+- query behavior;
+- error handling;
+- side effects.
+
+Set `"tests_required": false` only when the task is a simple structural change that does not introduce new behavior requiring a dedicated test, for example:
+
+- adding a nullable data property with no behavior yet;
+- adding metadata;
+- a mechanical internal refactor with preserved behavior;
+- a simple structural declaration.
+
+When `"tests_required": false`:
+
+- Do NOT invent behavioral tests merely to satisfy the planning format.
+- Existing regression tests will still be executed after implementation.
+- Do not add test changes unless the task actually requires them.
+
+When uncertain, use `"tests_required": true`.

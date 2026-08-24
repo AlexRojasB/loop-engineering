@@ -1,0 +1,1058 @@
+
+Project context status: resolved
+Current work: [spec] specs/repair-memory-benchmark.md
+
+Authority status: resolved
+Primary source: [spec] specs/repair-memory-benchmark.md
+Authoritative context:
+- [spec] specs/repair-memory-benchmark.md
+Supporting context:
+- [spec] specs/current-refunds.md
+Project authority resolved from explicit source selection.
+
+Source inventory:
+[spec] specs/current-refunds.md
+[spec] specs/repair-memory-benchmark.md
+Detected language adapter: dotnet
+Build command: dotnet build OrderPipeline.slnx
+Test command: dotnet test OrderPipeline.slnx
+
+============================================================
+AGENT 2.5.1
+============================================================
+
+============================================================
+PHASE 1 - PLANNING
+============================================================
+Planner path repaired: OrderPipeline/OrderService.cs -> OrderPipeline/Program.cs
+Planner path repaired: OrderPipeline/Order.cs -> OrderPipeline/Program.cs
+Planner path repaired: OrderPipeline/Order.cs -> OrderPipeline/Program.cs
+Planner path repaired: OrderPipeline/OrderService.cs -> OrderPipeline/Program.cs
+{
+  "read_files": [
+    "specs/current-refunds.md",
+    "OrderPipeline.Tests/UnitTest1.cs",
+    "OrderPipeline/Program.cs"
+  ],
+  "changes": [
+    {
+      "path": "OrderPipeline/Program.cs",
+      "type": "implementation",
+      "reason": "Add 'Refunded' to OrderStatus enum to satisfy the requirement of extending the order status set."
+    },
+    {
+      "path": "OrderPipeline/Program.cs",
+      "type": "implementation",
+      "reason": "Implement RefundOrder method that evaluates the current order state and returns appropriate result based on the requirements, ensuring no status changes on failure and preventing multiple refunds."
+    },
+    {
+      "path": "OrderPipeline.Tests/UnitTest1.cs",
+      "type": "test",
+      "reason": "Add new test cases to validate the new refund behavior, including edge cases like non-existent orders, Pending/Cancelled/Refunded states, and retry scenarios, preserving all existing behavior."
+    }
+  ],
+  "configuration_changes_required": false,
+  "dependencies_required": [],
+  "coder_instruction": "Implement the RefundOrder method in OrderService with strict state-based decision logic that respects the current order status without caching or inference. Add 'Refunded' to OrderStatus enum in Order.cs. Update UnitTest1.cs to include comprehensive tests that verify all required behaviors including failure conditions and state transitions. Ensure all existing tests continue to pass."
+}
+
+============================================================
+PHASE 2 - TEST SNIPPET GENERATION
+============================================================
+
+Test snippet attempt 1: OrderPipeline.Tests/UnitTest1.cs
+{
+  "decision": "APPROVE",
+  "issues": []
+}
+
+Test snippet attempt 2: OrderPipeline.Tests/UnitTest1.cs
+{
+  "decision": "APPROVE",
+  "issues": []
+}
+
+Test snippet attempt 3: OrderPipeline.Tests/UnitTest1.cs
+{
+  "decision": "APPROVE",
+  "issues": []
+}
+
+Test snippet attempt 4: OrderPipeline.Tests/UnitTest1.cs
+{
+  "decision": "APPROVE",
+  "issues": []
+}
+
+Semantic contract audit:
+{
+  "role": "audit_arrange",
+  "task_type": "code_audit",
+  "decision": "APPROVE",
+  "issues": [],
+  "reasoning": "The setup in all tests correctly uses the pattern: CreateOrder -> GetOrdersByCustomer to retrieve the order entity -> Use order.Id for subsequent operations. This matches the existing behavior where CreateOrder generates its own Guid internally. No test setup violates existing behavior. All new RefundOrder tests are valid and prepare entities correctly.",
+  "analysis": "Audit of Arrange/setup semantics in all tests confirms: 1) Order identity chain is correct (CreateOrder -> GetOrdersByCustomer -> order.Id), 2) Prerequisite operations are performed before tested actions, 3) No test uses non-existent or incorrectly obtained IDs. Since RefundOrder is a new method introduced by the task, its absence in existing tests does not constitute a defect.",
+  "json": {
+    "decision": "APPROVE",
+    "issues": []
+  }
+}
+
+============================================================
+PHASE 3 - EXPECTED RED
+============================================================
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  OrderPipeline -> /home/alex/ai-benchmarks/order-pipeline/OrderPipeline/bin/Debug/net10.0/OrderPipeline.dll
+/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs(156,30): error CS1061: 'OrderService' does not contain a definition for 'RefundOrder' and no accessible extension method 'RefundOrder' accepting a first argument of type 'OrderService' could be found (are you missing a using directive or an assembly reference?) [/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/OrderPipeline.Tests.csproj]
+/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs(167,30): error CS1061: 'OrderService' does not contain a definition for 'RefundOrder' and no accessible extension method 'RefundOrder' accepting a first argument of type 'OrderService' could be found (are you missing a using directive or an assembly reference?) [/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/OrderPipeline.Tests.csproj]
+/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs(178,30): error CS1061: 'OrderService' does not contain a definition for 'RefundOrder' and no accessible extension method 'RefundOrder' accepting a first argument of type 'OrderService' could be found (are you missing a using directive or an assembly reference?) [/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/OrderPipeline.Tests.csproj]
+/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs(189,29): error CS1061: 'OrderService' does not contain a definition for 'RefundOrder' and no accessible extension method 'RefundOrder' accepting a first argument of type 'OrderService' could be found (are you missing a using directive or an assembly reference?) [/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/OrderPipeline.Tests.csproj]
+/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs(190,30): error CS1061: 'OrderService' does not contain a definition for 'RefundOrder' and no accessible extension method 'RefundOrder' accepting a first argument of type 'OrderService' could be found (are you missing a using directive or an assembly reference?) [/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/OrderPipeline.Tests.csproj]
+/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs(201,29): error CS1061: 'OrderService' does not contain a definition for 'RefundOrder' and no accessible extension method 'RefundOrder' accepting a first argument of type 'OrderService' could be found (are you missing a using directive or an assembly reference?) [/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/OrderPipeline.Tests.csproj]
+/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs(202,34): error CS0117: 'OrderStatus' does not contain a definition for 'Refunded' [/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/OrderPipeline.Tests.csproj]
+/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs(213,29): error CS1061: 'OrderService' does not contain a definition for 'RefundOrder' and no accessible extension method 'RefundOrder' accepting a first argument of type 'OrderService' could be found (are you missing a using directive or an assembly reference?) [/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/OrderPipeline.Tests.csproj]
+/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs(214,30): error CS1061: 'OrderService' does not contain a definition for 'RefundOrder' and no accessible extension method 'RefundOrder' accepting a first argument of type 'OrderService' could be found (are you missing a using directive or an assembly reference?) [/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/OrderPipeline.Tests.csproj]
+/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs(215,34): error CS0117: 'OrderStatus' does not contain a definition for 'Refunded' [/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/OrderPipeline.Tests.csproj]
+/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs(225,29): error CS1061: 'OrderService' does not contain a definition for 'RefundOrder' and no accessible extension method 'RefundOrder' accepting a first argument of type 'OrderService' could be found (are you missing a using directive or an assembly reference?) [/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/OrderPipeline.Tests.csproj]
+/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs(226,34): error CS0117: 'OrderStatus' does not contain a definition for 'Refunded' [/home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/OrderPipeline.Tests.csproj]
+
+
+{
+  "classification": "EXPECTED_RED",
+  "reason": "Tests reference requested feature that does not exist yet."
+}
+
+============================================================
+PHASE 4 - IMPLEMENTATION
+============================================================
+
+============================================================
+PHASE 5 - BUILD
+============================================================
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  OrderPipeline -> /home/alex/ai-benchmarks/order-pipeline/OrderPipeline/bin/Debug/net10.0/OrderPipeline.dll
+  OrderPipeline.Tests -> /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/bin/Debug/net10.0/OrderPipeline.Tests.dll
+
+Build succeeded.
+    0 Warning(s)
+    0 Error(s)
+
+Time Elapsed 00:00:02.31
+
+
+============================================================
+PHASE 6 - TESTS
+============================================================
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  OrderPipeline -> /home/alex/ai-benchmarks/order-pipeline/OrderPipeline/bin/Debug/net10.0/OrderPipeline.dll
+  OrderPipeline.Tests -> /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/bin/Debug/net10.0/OrderPipeline.Tests.dll
+Test run for /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/bin/Debug/net10.0/OrderPipeline.Tests.dll (.NETCoreApp,Version=v10.0)
+VSTest version 18.0.2 (x64)
+
+Starting test execution, please wait...
+A total of 1 test files matched the specified pattern.
+  Failed OrderServiceTests.RefundOrder_SecondCallDoesNotModifyOrderStatus [1 ms]
+  Error Message:
+   Assert.False() Failure
+Expected: False
+Actual:   True
+  Stack Trace:
+     at OrderServiceTests.RefundOrder_SecondCallDoesNotModifyOrderStatus() in /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs:line 214
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+  Failed OrderServiceTests.RefundOrder_ReturnsFalse_WhenOrderIsAlreadyRefunded [< 1 ms]
+  Error Message:
+   Assert.False() Failure
+Expected: False
+Actual:   True
+  Stack Trace:
+     at OrderServiceTests.RefundOrder_ReturnsFalse_WhenOrderIsAlreadyRefunded() in /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs:line 190
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+  Failed OrderServiceTests.RefundOrder_FailedRefundDoesNotModifyOrderStatus [< 1 ms]
+  Error Message:
+   Assert.True() Failure
+Expected: True
+Actual:   False
+  Stack Trace:
+     at OrderServiceTests.RefundOrder_FailedRefundDoesNotModifyOrderStatus() in /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs:line 225
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+  Failed OrderServiceTests.RefundOrder_ReturnsFalse_WhenOrderIsPending [< 1 ms]
+  Error Message:
+   Assert.False() Failure
+Expected: False
+Actual:   True
+  Stack Trace:
+     at OrderServiceTests.RefundOrder_ReturnsFalse_WhenOrderIsPending() in /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs:line 167
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+
+Failed!  - Failed:     4, Passed:    15, Skipped:     0, Total:    19, Duration: 110 ms - OrderPipeline.Tests.dll (net10.0)
+[xUnit.net 00:00:00.38]     OrderServiceTests.RefundOrder_SecondCallDoesNotModifyOrderStatus [FAIL]
+[xUnit.net 00:00:00.39]     OrderServiceTests.RefundOrder_ReturnsFalse_WhenOrderIsAlreadyRefunded [FAIL]
+[xUnit.net 00:00:00.42]     OrderServiceTests.RefundOrder_FailedRefundDoesNotModifyOrderStatus [FAIL]
+[xUnit.net 00:00:00.43]     OrderServiceTests.RefundOrder_ReturnsFalse_WhenOrderIsPending [FAIL]
+
+
+===== FROZEN TEST CONTRACT =====
+===== FROZEN TEST FILE: OrderPipeline.Tests/UnitTest1.cs =====
+using System;
+using System.Linq;
+using Xunit;
+
+public class OrderServiceTests
+{
+    [Fact]
+    public void CreateOrder_RejectsNullOrWhitespaceEmail()
+    {
+        var service = new OrderService();
+
+        Assert.False(service.CreateOrder(100m, null!));
+        Assert.False(service.CreateOrder(100m, ""));
+        Assert.False(service.CreateOrder(100m, "   "));
+    }
+
+    [Fact]
+    public void CreateOrder_RejectsZeroOrNegativeTotal()
+    {
+        var service = new OrderService();
+
+        Assert.False(service.CreateOrder(0m, "test@example.com"));
+        Assert.False(service.CreateOrder(-1m, "test@example.com"));
+    }
+
+    [Fact]
+    public void CreateOrder_AssignsUniqueIds_AndPendingStatus()
+    {
+        var service = new OrderService();
+
+        Assert.True(service.CreateOrder(100m, "a@example.com"));
+        Assert.True(service.CreateOrder(200m, "b@example.com"));
+
+        var first = service.GetOrdersByCustomer("a@example.com").Single();
+        var second = service.GetOrdersByCustomer("b@example.com").Single();
+
+        Assert.NotEqual(Guid.Empty, first.Id);
+        Assert.NotEqual(Guid.Empty, second.Id);
+        Assert.NotEqual(first.Id, second.Id);
+
+        Assert.Equal(OrderStatus.Pending, first.Status);
+        Assert.Equal(OrderStatus.Pending, second.Status);
+    }
+
+    [Fact]
+    public void PayOrder_ReturnsFalse_WhenOrderDoesNotExist()
+    {
+        var service = new OrderService();
+
+        Assert.False(service.PayOrder(Guid.NewGuid()));
+    }
+
+    [Fact]
+    public void PayOrder_TransitionsPendingToPaid()
+    {
+        var service = new OrderService();
+
+        service.CreateOrder(100m, "pay@example.com");
+        var order = service.GetOrdersByCustomer("pay@example.com").Single();
+
+        Assert.True(service.PayOrder(order.Id));
+        Assert.Equal(OrderStatus.Paid, order.Status);
+    }
+
+    [Fact]
+    public void PayOrder_DoesNotAllowAlreadyPaidOrder()
+    {
+        var service = new OrderService();
+
+        service.CreateOrder(100m, "paid@example.com");
+        var order = service.GetOrdersByCustomer("paid@example.com").Single();
+
+        Assert.True(service.PayOrder(order.Id));
+        Assert.False(service.PayOrder(order.Id));
+    }
+
+    [Fact]
+    public void PayOrder_DoesNotAllowCancelledOrder()
+    {
+        var service = new OrderService();
+
+        service.CreateOrder(100m, "cancelled@example.com");
+        var order = service.GetOrdersByCustomer("cancelled@example.com").Single();
+
+        Assert.True(service.CancelOrder(order.Id));
+        Assert.False(service.PayOrder(order.Id));
+    }
+
+    [Fact]
+    public void CancelOrder_ReturnsFalse_WhenOrderDoesNotExist()
+    {
+        var service = new OrderService();
+
+        Assert.False(service.CancelOrder(Guid.NewGuid()));
+    }
+
+    [Fact]
+    public void CancelOrder_TransitionsPendingToCancelled()
+    {
+        var service = new OrderService();
+
+        service.CreateOrder(100m, "cancel@example.com");
+        var order = service.GetOrdersByCustomer("cancel@example.com").Single();
+
+        Assert.True(service.CancelOrder(order.Id));
+        Assert.Equal(OrderStatus.Cancelled, order.Status);
+    }
+
+    [Fact]
+    public void CancelOrder_DoesNotAllowPaidOrder()
+    {
+        var service = new OrderService();
+
+        service.CreateOrder(100m, "cannotcancel@example.com");
+        var order = service.GetOrdersByCustomer("cannotcancel@example.com").Single();
+
+        Assert.True(service.PayOrder(order.Id));
+        Assert.False(service.CancelOrder(order.Id));
+    }
+
+    [Fact]
+    public void GetOrdersByCustomer_IsCaseInsensitive()
+    {
+        var service = new OrderService();
+
+        service.CreateOrder(100m, "Test@Example.com");
+
+        var result = service.GetOrdersByCustomer("test@example.com");
+
+        Assert.Single(result);
+    }
+
+    [Fact]
+    public void GetOrdersByCustomer_DoesNotExposeInternalCollection()
+    {
+        var service = new OrderService();
+
+        service.CreateOrder(100m, "copy@example.com");
+
+        var result = service.GetOrdersByCustomer("copy@example.com");
+
+        var list = result.ToList();
+        list.Clear();
+
+        var secondRead = service.GetOrdersByCustomer("copy@example.com");
+
+        Assert.Single(secondRead);
+    }
+
+    [Fact]
+    public void RefundOrder_ReturnsFalse_WhenOrderDoesNotExist()
+    {
+        var service = new OrderService();
+        var orderId = Guid.NewGuid();
+
+        Assert.False(service.RefundOrder(orderId));
+    }
+
+    [Fact]
+    public void RefundOrder_ReturnsFalse_WhenOrderIsPending()
+    {
+        var service = new OrderService();
+        service.CreateOrder(100m, "test@example.com");
+        var order = service.GetOrdersByCustomer("test@example.com").Single();
+
+        Assert.True(service.PayOrder(order.Id));
+        Assert.False(service.RefundOrder(order.Id));
+    }
+
+    [Fact]
+    public void RefundOrder_ReturnsFalse_WhenOrderIsCancelled()
+    {
+        var service = new OrderService();
+        service.CreateOrder(100m, "test@example.com");
+        var order = service.GetOrdersByCustomer("test@example.com").Single();
+
+        Assert.True(service.CancelOrder(order.Id));
+        Assert.False(service.RefundOrder(order.Id));
+    }
+
+    [Fact]
+    public void RefundOrder_ReturnsFalse_WhenOrderIsAlreadyRefunded()
+    {
+        var service = new OrderService();
+        service.CreateOrder(100m, "test@example.com");
+        var order = service.GetOrdersByCustomer("test@example.com").Single();
+
+        Assert.True(service.PayOrder(order.Id));
+        Assert.True(service.RefundOrder(order.Id));
+        Assert.False(service.RefundOrder(order.Id));
+    }
+
+    [Fact]
+    public void RefundOrder_ChangesOrderStatusToRefunded()
+    {
+        var service = new OrderService();
+        service.CreateOrder(100m, "test@example.com");
+        var order = service.GetOrdersByCustomer("test@example.com").Single();
+
+        Assert.True(service.PayOrder(order.Id));
+        Assert.True(service.RefundOrder(order.Id));
+        Assert.Equal(OrderStatus.Refunded, order.Status);
+    }
+
+    [Fact]
+    public void RefundOrder_SecondCallDoesNotModifyOrderStatus()
+    {
+        var service = new OrderService();
+        service.CreateOrder(100m, "test@example.com");
+        var order = service.GetOrdersByCustomer("test@example.com").Single();
+
+        Assert.True(service.PayOrder(order.Id));
+        Assert.True(service.RefundOrder(order.Id));
+        Assert.False(service.RefundOrder(order.Id));
+        Assert.Equal(OrderStatus.Refunded, order.Status);
+    }
+
+    [Fact]
+    public void RefundOrder_FailedRefundDoesNotModifyOrderStatus()
+    {
+        var service = new OrderService();
+        service.CreateOrder(100m, "test@example.com");
+        var order = service.GetOrdersByCustomer("test@example.com").Single();
+
+        Assert.True(service.RefundOrder(order.Id));
+        Assert.Equal(OrderStatus.Refunded, order.Status);
+    }
+}
+
+===== END FROZEN TEST CONTRACT =====
+
+
+TEST REPAIR 1
+Repair role: CODER
+Repair model: qwen2.5-coder:7b-instruct-q4_K_M
+Failure owner: implementation
+Repair targets:
+- OrderPipeline/Program.cs
+
+===== GENERATED TEST REPAIR =====
+Attempt: 1
+Role: CODER
+Model: qwen2.5-coder:7b-instruct-q4_K_M
+Target: OrderPipeline/Program.cs
+--------------------------------
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+public enum OrderStatus
+{
+    Pending,
+    Paid,
+    Cancelled,
+    Refunded
+}
+
+public class Order
+{
+    public Guid Id { get; }
+    public decimal Total { get; }
+    public string CustomerEmail { get; }
+    public OrderStatus Status { get; set; }
+
+    public Order(decimal total, string customerEmail)
+    {
+        if (string.IsNullOrWhiteSpace(customerEmail))
+            throw new ArgumentException("Customer email cannot be null or whitespace.");
+
+        if (total <= 0)
+            throw new ArgumentException("Total must be greater than zero.");
+
+        Id = Guid.NewGuid();
+        Total = total;
+        CustomerEmail = customerEmail;
+        Status = OrderStatus.Pending;
+    }
+}
+
+public class OrderService
+{
+    private readonly Dictionary<Guid, Order> _orders = new Dictionary<Guid, Order>();
+
+    public bool CreateOrder(decimal total, string customerEmail)
+    {
+        try
+        {
+            var order = new Order(total, customerEmail);
+            _orders[order.Id] = order;
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    public bool PayOrder(Guid orderId)
+    {
+        if (!_orders.TryGetValue(orderId, out var order))
+            return false;
+
+        if (order.Status == OrderStatus.Pending)
+        {
+            order.Status = OrderStatus.Paid;
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool CancelOrder(Guid orderId)
+    {
+        if (!_orders.TryGetValue(orderId, out var order))
+            return false;
+
+        if (order.Status == OrderStatus.Pending)
+        {
+            order.Status = OrderStatus.Cancelled;
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool RefundOrder(Guid orderId)
+    {
+        if (!_orders.TryGetValue(orderId, out var order))
+            return false;
+
+        if (order.Status == OrderStatus.Paid)
+        {
+            order.Status = OrderStatus.Refunded;
+            return true;
+        }
+
+        return false;
+    }
+
+    public List<Order> GetOrdersByCustomer(string customerEmail)
+    {
+        return _orders.Values.Where(o => string.Equals(o.CustomerEmail, customerEmail, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+
+    public static void Main(string[] args)
+    {
+        // This is a placeholder for the Main method. It should not be deleted.
+        // It is required for the project to build successfully.
+    }
+}
+
+===== END GENERATED TEST REPAIR =====
+
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  OrderPipeline -> /home/alex/ai-benchmarks/order-pipeline/OrderPipeline/bin/Debug/net10.0/OrderPipeline.dll
+  OrderPipeline.Tests -> /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/bin/Debug/net10.0/OrderPipeline.Tests.dll
+Test run for /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/bin/Debug/net10.0/OrderPipeline.Tests.dll (.NETCoreApp,Version=v10.0)
+VSTest version 18.0.2 (x64)
+
+Starting test execution, please wait...
+A total of 1 test files matched the specified pattern.
+  Failed OrderServiceTests.RefundOrder_FailedRefundDoesNotModifyOrderStatus [1 ms]
+  Error Message:
+   Assert.True() Failure
+Expected: True
+Actual:   False
+  Stack Trace:
+     at OrderServiceTests.RefundOrder_FailedRefundDoesNotModifyOrderStatus() in /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs:line 225
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+  Failed OrderServiceTests.RefundOrder_ReturnsFalse_WhenOrderIsPending [< 1 ms]
+  Error Message:
+   Assert.False() Failure
+Expected: False
+Actual:   True
+  Stack Trace:
+     at OrderServiceTests.RefundOrder_ReturnsFalse_WhenOrderIsPending() in /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs:line 167
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+
+Failed!  - Failed:     2, Passed:    17, Skipped:     0, Total:    19, Duration: 82 ms - OrderPipeline.Tests.dll (net10.0)
+[xUnit.net 00:00:00.31]     OrderServiceTests.RefundOrder_FailedRefundDoesNotModifyOrderStatus [FAIL]
+[xUnit.net 00:00:00.32]     OrderServiceTests.RefundOrder_ReturnsFalse_WhenOrderIsPending [FAIL]
+
+Test progress detected.
+
+TEST REPAIR 2
+Repair role: CODER
+Repair model: qwen2.5-coder:7b-instruct-q4_K_M
+Failure owner: implementation
+Repair targets:
+- OrderPipeline/Program.cs
+
+===== GENERATED TEST REPAIR =====
+Attempt: 2
+Role: CODER
+Model: qwen2.5-coder:7b-instruct-q4_K_M
+Target: OrderPipeline/Program.cs
+--------------------------------
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+public enum OrderStatus
+{
+    Pending,
+    Paid,
+    Cancelled,
+    Refunded
+}
+
+public class Order
+{
+    public Guid Id { get; }
+    public decimal Total { get; }
+    public string CustomerEmail { get; }
+    public OrderStatus Status { get; set; }
+
+    public Order(decimal total, string customerEmail)
+    {
+        if (string.IsNullOrWhiteSpace(customerEmail))
+            throw new ArgumentException("Customer email cannot be null or whitespace.");
+
+        if (total <= 0)
+            throw new ArgumentException("Total must be greater than zero.");
+
+        Id = Guid.NewGuid();
+        Total = total;
+        CustomerEmail = customerEmail;
+        Status = OrderStatus.Pending;
+    }
+}
+
+public class OrderService
+{
+    private readonly Dictionary<Guid, Order> _orders = new Dictionary<Guid, Order>();
+
+    public bool CreateOrder(decimal total, string customerEmail)
+    {
+        try
+        {
+            var order = new Order(total, customerEmail);
+            _orders[order.Id] = order;
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    public bool PayOrder(Guid orderId)
+    {
+        if (!_orders.TryGetValue(orderId, out var order))
+            return false;
+
+        if (order.Status == OrderStatus.Pending)
+        {
+            order.Status = OrderStatus.Paid;
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool CancelOrder(Guid orderId)
+    {
+        if (!_orders.TryGetValue(orderId, out var order))
+            return false;
+
+        if (order.Status == OrderStatus.Pending)
+        {
+            order.Status = OrderStatus.Cancelled;
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool RefundOrder(Guid orderId)
+    {
+        if (!_orders.TryGetValue(orderId, out var order))
+            return false;
+
+        if (order.Status == OrderStatus.Paid)
+        {
+            order.Status = OrderStatus.Refunded;
+            return true;
+        }
+
+        return false;
+    }
+
+    public List<Order> GetOrdersByCustomer(string customerEmail)
+    {
+        return _orders.Values.Where(o => string.Equals(o.CustomerEmail, customerEmail, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+
+    public static void Main(string[] args)
+    {
+        // This is a placeholder for the Main method. It should not be deleted.
+        // It is required for the project to build successfully.
+    }
+}
+
+===== END GENERATED TEST REPAIR =====
+
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  OrderPipeline -> /home/alex/ai-benchmarks/order-pipeline/OrderPipeline/bin/Debug/net10.0/OrderPipeline.dll
+  OrderPipeline.Tests -> /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/bin/Debug/net10.0/OrderPipeline.Tests.dll
+Test run for /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/bin/Debug/net10.0/OrderPipeline.Tests.dll (.NETCoreApp,Version=v10.0)
+VSTest version 18.0.2 (x64)
+
+Starting test execution, please wait...
+A total of 1 test files matched the specified pattern.
+  Failed OrderServiceTests.RefundOrder_FailedRefundDoesNotModifyOrderStatus [1 ms]
+  Error Message:
+   Assert.True() Failure
+Expected: True
+Actual:   False
+  Stack Trace:
+     at OrderServiceTests.RefundOrder_FailedRefundDoesNotModifyOrderStatus() in /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs:line 225
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+  Failed OrderServiceTests.RefundOrder_ReturnsFalse_WhenOrderIsPending [< 1 ms]
+  Error Message:
+   Assert.False() Failure
+Expected: False
+Actual:   True
+  Stack Trace:
+     at OrderServiceTests.RefundOrder_ReturnsFalse_WhenOrderIsPending() in /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs:line 167
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+
+Failed!  - Failed:     2, Passed:    17, Skipped:     0, Total:    19, Duration: 81 ms - OrderPipeline.Tests.dll (net10.0)
+[xUnit.net 00:00:00.31]     OrderServiceTests.RefundOrder_FailedRefundDoesNotModifyOrderStatus [FAIL]
+[xUnit.net 00:00:00.32]     OrderServiceTests.RefundOrder_ReturnsFalse_WhenOrderIsPending [FAIL]
+
+No test progress. Rolling back.
+
+TEST REPAIR 3
+Repair role: ESCALATION
+Repair model: qwen3:4b-instruct-2507-q4_K_M
+Failure owner: implementation
+Repair targets:
+- OrderPipeline/Program.cs
+
+===== GENERATED TEST REPAIR =====
+Attempt: 3
+Role: ESCALATION
+Model: qwen3:4b-instruct-2507-q4_K_M
+Target: OrderPipeline/Program.cs
+--------------------------------
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+public enum OrderStatus
+{
+    Pending,
+    Paid,
+    Cancelled,
+    Refunded
+}
+
+public class Order
+{
+    public Guid Id { get; }
+    public decimal Total { get; }
+    public string CustomerEmail { get; }
+    public OrderStatus Status { get; set; }
+
+    public Order(decimal total, string customerEmail)
+    {
+        if (string.IsNullOrWhiteSpace(customerEmail))
+            throw new ArgumentException("Customer email cannot be null or whitespace.");
+
+        if (total <= 0)
+            throw new ArgumentException("Total must be greater than zero.");
+
+        Id = Guid.NewGuid();
+        Total = total;
+        CustomerEmail = customerEmail;
+        Status = OrderStatus.Pending;
+    }
+}
+
+public class OrderService
+{
+    private readonly Dictionary<Guid, Order> _orders = new Dictionary<Guid, Order>();
+
+    public bool CreateOrder(decimal total, string customerEmail)
+    {
+        try
+        {
+            var order = new Order(total, customerEmail);
+            _orders[order.Id] = order;
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    public bool PayOrder(Guid orderId)
+    {
+        if (!_orders.TryGetValue(orderId, out var order))
+            return false;
+
+        if (order.Status == OrderStatus.Pending)
+        {
+            order.Status = OrderStatus.Paid;
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool CancelOrder(Guid orderId)
+    {
+        if (!_orders.TryGetValue(orderId, out var order))
+            return false;
+
+        if (order.Status == OrderStatus.Pending)
+        {
+            order.Status = OrderStatus.Cancelled;
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool RefundOrder(Guid orderId)
+    {
+        if (!_orders.TryGetValue(orderId, out var order))
+            return false;
+
+        // Refund is only allowed if order is Paid, and only once
+        if (order.Status == OrderStatus.Paid)
+        {
+            order.Status = OrderStatus.Refunded;
+            return true;
+        }
+
+        // If order is not Paid, refund fails and status remains unchanged
+        return false;
+    }
+
+    public List<Order> GetOrdersByCustomer(string customerEmail)
+    {
+        return _orders.Values.Where(o => string.Equals(o.CustomerEmail, customerEmail, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+
+    public static void Main(string[] args)
+    {
+        // This is a placeholder for the Main method. It should not be deleted.
+        // It is required for the project to build successfully.
+    }
+}
+
+===== END GENERATED TEST REPAIR =====
+
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  OrderPipeline -> /home/alex/ai-benchmarks/order-pipeline/OrderPipeline/bin/Debug/net10.0/OrderPipeline.dll
+  OrderPipeline.Tests -> /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/bin/Debug/net10.0/OrderPipeline.Tests.dll
+Test run for /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/bin/Debug/net10.0/OrderPipeline.Tests.dll (.NETCoreApp,Version=v10.0)
+VSTest version 18.0.2 (x64)
+
+Starting test execution, please wait...
+A total of 1 test files matched the specified pattern.
+  Failed OrderServiceTests.RefundOrder_FailedRefundDoesNotModifyOrderStatus [1 ms]
+  Error Message:
+   Assert.True() Failure
+Expected: True
+Actual:   False
+  Stack Trace:
+     at OrderServiceTests.RefundOrder_FailedRefundDoesNotModifyOrderStatus() in /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs:line 225
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+  Failed OrderServiceTests.RefundOrder_ReturnsFalse_WhenOrderIsPending [< 1 ms]
+  Error Message:
+   Assert.False() Failure
+Expected: False
+Actual:   True
+  Stack Trace:
+     at OrderServiceTests.RefundOrder_ReturnsFalse_WhenOrderIsPending() in /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs:line 167
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+
+Failed!  - Failed:     2, Passed:    17, Skipped:     0, Total:    19, Duration: 91 ms - OrderPipeline.Tests.dll (net10.0)
+[xUnit.net 00:00:00.32]     OrderServiceTests.RefundOrder_FailedRefundDoesNotModifyOrderStatus [FAIL]
+[xUnit.net 00:00:00.32]     OrderServiceTests.RefundOrder_ReturnsFalse_WhenOrderIsPending [FAIL]
+
+No test progress. Rolling back.
+
+TEST REPAIR 4
+Repair role: ESCALATION
+Repair model: qwen3:4b-instruct-2507-q4_K_M
+Failure owner: implementation
+Repair targets:
+- OrderPipeline/Program.cs
+
+===== GENERATED TEST REPAIR =====
+Attempt: 4
+Role: ESCALATION
+Model: qwen3:4b-instruct-2507-q4_K_M
+Target: OrderPipeline/Program.cs
+--------------------------------
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
+public enum OrderStatus
+{
+    Pending,
+    Paid,
+    Cancelled,
+    Refunded
+}
+
+public class Order
+{
+    public Guid Id { get; }
+    public decimal Total { get; }
+    public string CustomerEmail { get; }
+    public OrderStatus Status { get; set; }
+
+    public Order(decimal total, string customerEmail)
+    {
+        if (string.IsNullOrWhiteSpace(customerEmail))
+            throw new ArgumentException("Customer email cannot be null or whitespace.");
+
+        if (total <= 0)
+            throw new ArgumentException("Total must be greater than zero.");
+
+        Id = Guid.NewGuid();
+        Total = total;
+        CustomerEmail = customerEmail;
+        Status = OrderStatus.Pending;
+    }
+}
+
+public class OrderService
+{
+    private readonly Dictionary<Guid, Order> _orders = new Dictionary<Guid, Order>();
+
+    public bool CreateOrder(decimal total, string customerEmail)
+    {
+        try
+        {
+            var order = new Order(total, customerEmail);
+            _orders[order.Id] = order;
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    public bool PayOrder(Guid orderId)
+    {
+        if (!_orders.TryGetValue(orderId, out var order))
+            return false;
+
+        if (order.Status == OrderStatus.Pending)
+        {
+            order.Status = OrderStatus.Paid;
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool CancelOrder(Guid orderId)
+    {
+        if (!_orders.TryGetValue(orderId, out var order))
+            return false;
+
+        if (order.Status == OrderStatus.Pending)
+        {
+            order.Status = OrderStatus.Cancelled;
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool RefundOrder(Guid orderId)
+    {
+        if (!_orders.TryGetValue(orderId, out var order))
+            return false;
+
+        if (order.Status == OrderStatus.Paid)
+        {
+            order.Status = OrderStatus.Refunded;
+            return true;
+        }
+
+        return false;
+    }
+
+    public List<Order> GetOrdersByCustomer(string customerEmail)
+    {
+        return _orders.Values.Where(o => string.Equals(o.CustomerEmail, customerEmail, StringComparison.OrdinalIgnoreCase)).ToList();
+    }
+
+    public static void Main(string[] args)
+    {
+        // This is a placeholder for the Main method. It should not be deleted.
+        // It is required for the project to build successfully.
+    }
+}
+
+===== END GENERATED TEST REPAIR =====
+
+  Determining projects to restore...
+  All projects are up-to-date for restore.
+  OrderPipeline -> /home/alex/ai-benchmarks/order-pipeline/OrderPipeline/bin/Debug/net10.0/OrderPipeline.dll
+  OrderPipeline.Tests -> /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/bin/Debug/net10.0/OrderPipeline.Tests.dll
+Test run for /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/bin/Debug/net10.0/OrderPipeline.Tests.dll (.NETCoreApp,Version=v10.0)
+VSTest version 18.0.2 (x64)
+
+Starting test execution, please wait...
+A total of 1 test files matched the specified pattern.
+  Failed OrderServiceTests.RefundOrder_FailedRefundDoesNotModifyOrderStatus [1 ms]
+  Error Message:
+   Assert.True() Failure
+Expected: True
+Actual:   False
+  Stack Trace:
+     at OrderServiceTests.RefundOrder_FailedRefundDoesNotModifyOrderStatus() in /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs:line 225
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+  Failed OrderServiceTests.RefundOrder_ReturnsFalse_WhenOrderIsPending [< 1 ms]
+  Error Message:
+   Assert.False() Failure
+Expected: False
+Actual:   True
+  Stack Trace:
+     at OrderServiceTests.RefundOrder_ReturnsFalse_WhenOrderIsPending() in /home/alex/ai-benchmarks/order-pipeline/OrderPipeline.Tests/UnitTest1.cs:line 167
+   at System.Reflection.MethodBaseInvoker.InterpretedInvoke_Method(Object obj, IntPtr* args)
+   at System.Reflection.MethodBaseInvoker.InvokeWithNoArgs(Object obj, BindingFlags invokeAttr)
+
+Failed!  - Failed:     2, Passed:    17, Skipped:     0, Total:    19, Duration: 91 ms - OrderPipeline.Tests.dll (net10.0)
+[xUnit.net 00:00:00.30]     OrderServiceTests.RefundOrder_FailedRefundDoesNotModifyOrderStatus [FAIL]
+[xUnit.net 00:00:00.31]     OrderServiceTests.RefundOrder_ReturnsFalse_WhenOrderIsPending [FAIL]
+
+No test progress. Rolling back.
+Tests did not converge.
+
+AGENT 2.5.1 PIPELINE DID NOT COMPLETE

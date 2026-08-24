@@ -9,7 +9,10 @@
   "model_timeout_seconds": 420,
   "retry_timeout_seconds": 300,
   "escalation_after_test_repairs": 2,
-  "max_test_generation_attempts": 4,
-  "max_build_repairs": 3,
-  "max_test_repairs": 4
+  "max_test_generation_attempts": 8,
+  "max_build_repairs": 4,
+  "max_test_repairs": 4,
+  "semantic_reviewer_model": "qwen3.5:9b",
+  "semantic_reviewer_thinking": true,
+  "max_spec_attempts": 5
 }

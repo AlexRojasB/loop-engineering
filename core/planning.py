@@ -140,6 +140,41 @@ def repair_planner_path(
 
         return resolved
 
+    requested_path = Path(
+        requested
+    )
+
+    if is_source_file(
+        requested
+    ):
+        requested_parent = str(
+            requested_path.parent
+        )
+
+        sibling_sources = [
+            path
+            for path in files
+            if (
+                is_source_file(path)
+                and not is_test_file(path)
+                and str(
+                    Path(path).parent
+                )
+                == requested_parent
+            )
+        ]
+
+        if len(sibling_sources) == 1:
+            resolved = sibling_sources[0]
+
+            print(
+                "Planner path repaired by "
+                "directory fallback: "
+                f"{requested} -> {resolved}"
+            )
+
+            return resolved
+
     return None
 
 
@@ -164,6 +199,14 @@ def normalize_plan(
             planner_plan.get(
                 "dependencies_required",
                 []
+            ),
+
+        "tests_required":
+            bool(
+                planner_plan.get(
+                    "tests_required",
+                    True
+                )
             ),
 
         "coder_instruction":

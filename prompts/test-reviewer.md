@@ -87,6 +87,52 @@ If rejecting, every issue MUST describe a defect in the TEST CONTRACT itself, su
 
 Do not report missing future implementation as an issue.
 
+## Future Contract Rules
+
+The authoritative task defines the FUTURE public contract.
+
+A test MUST NOT be rejected merely because it references a public method,
+property, enum value, or other public member that does not exist in the
+CURRENT production code when that member is explicitly required by the task.
+
+Examples:
+
+- Task requires adding `RefundTimestamp` to `Order`.
+  A test using `order.RefundTimestamp` is VALID.
+
+- Task requires adding `RefundReason` to `Order`.
+  A test using `order.RefundReason` is VALID.
+
+- Task requires adding `RefundOrder(Guid orderId)`.
+  A test invoking `service.RefundOrder(orderId)` is VALID.
+
+- Task requires adding a new enum value.
+  A test referencing that future enum value is VALID.
+
+This is normal test-first development. The test contract describes behavior
+and public API that production code will implement AFTER Expected RED.
+
+Reject a future public API reference only when:
+
+1. the task does NOT request or imply that API/member;
+2. the test invents additional behavior outside the task;
+3. the test uses the requested member in a way incompatible with the task;
+4. the Arrange/setup is impossible even after the requested feature exists;
+5. the expected result contradicts the authoritative task.
+
+A compilation failure caused only by a requested future public member being
+absent from current production is NOT a defect in the test contract.
+
+Do not classify a requested future PUBLIC property as "private-member access"
+merely because it does not exist yet.
+
+Before rejecting a missing member, ask:
+
+"Is this member explicitly required by the authoritative task?"
+
+If YES, treat its future existence as valid and continue reviewing the
+semantics of the test.
+
 ## Test Setup Validity
 
 Before approving generated tests, verify that their Arrange/setup logic is valid against the existing production API.

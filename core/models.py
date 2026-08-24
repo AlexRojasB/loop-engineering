@@ -10,7 +10,8 @@ def ollama(
     model,
     prompt,
     timeout,
-    json_mode=False
+    json_mode=False,
+    think=False
 ):
     payload = {
         "model": model,
@@ -20,6 +21,9 @@ def ollama(
 
     if json_mode:
         payload["format"] = "json"
+
+    if think:
+        payload["think"] = True
 
     request = urllib.request.Request(
         OLLAMA_URL,
@@ -38,9 +42,22 @@ def ollama(
                 response.read().decode()
             )
 
+        response_text = result.get(
+            "response",
+            ""
+        )
+
+        if (
+            not response_text.strip()
+            and result.get("thinking")
+        ):
+            response_text = result[
+                "thinking"
+            ]
+
         return {
             "ok": True,
-            "response": result["response"],
+            "response": response_text,
             "error": None
         }
 
@@ -69,7 +86,8 @@ def call_model(
     model,
     prompt,
     json_mode=False,
-    reduced_prompt=None
+    reduced_prompt=None,
+    think=False
 ):
     result = ollama(
         model,
@@ -78,7 +96,8 @@ def call_model(
             "model_timeout_seconds",
             420
         ),
-        json_mode=json_mode
+        json_mode=json_mode,
+        think=think
     )
 
     if result["ok"]:
@@ -103,5 +122,6 @@ def call_model(
             "retry_timeout_seconds",
             300
         ),
-        json_mode=json_mode
+        json_mode=json_mode,
+        think=think
     )

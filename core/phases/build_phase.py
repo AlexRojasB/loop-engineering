@@ -33,6 +33,7 @@ def repair_prompt(
         target=file_change["path"],
         requirements=requirements,
         current_content=current_content,
+        frozen_tests="",
         failure=failure
     )
 

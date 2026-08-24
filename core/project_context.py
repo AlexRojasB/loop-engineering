@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from core.authority import (
     format_authority_report,
     resolve_authority,
@@ -63,7 +65,8 @@ def build_project_context(
     selected_source_path=None,
     authoritative_limit=DEFAULT_AUTHORITATIVE_LIMIT,
     supporting_limit=DEFAULT_SUPPORTING_LIMIT,
-    total_limit=DEFAULT_TOTAL_LIMIT
+    total_limit=DEFAULT_TOTAL_LIMIT,
+    isolate_selected_source=False
 ):
     sources = discover_project_sources(
         workspace
@@ -115,6 +118,38 @@ def build_project_context(
             "authority_score"
         ] = 1000
 
+        selected_parent = str(
+            Path(
+                selected["path"]
+            ).parent
+        )
+
+        supporting_sources = []
+
+        for source in sources:
+            if (
+                source["path"]
+                == selected["path"]
+            ):
+                continue
+
+            if isolate_selected_source:
+                source_parent = str(
+                    Path(
+                        source["path"]
+                    ).parent
+                )
+
+                if (
+                    source_parent
+                    == selected_parent
+                ):
+                    continue
+
+            supporting_sources.append(
+                source
+            )
+
         resolution = {
             "status":
                 "resolved",
@@ -128,16 +163,7 @@ def build_project_context(
                 ],
 
             "supporting":
-                [
-                    source
-                    for source in sources
-                    if (
-                        source["path"]
-                        != selected[
-                            "path"
-                        ]
-                    )
-                ],
+                supporting_sources,
 
             "ambiguous":
                 [],

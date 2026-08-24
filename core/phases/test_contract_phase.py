@@ -282,10 +282,13 @@ def run_test_contract_phase(
                 == "APPROVE"
             ):
                 semantic_model = config.get(
-                    "escalation_model",
-                    config[
-                        "test_reviewer_model"
-                    ]
+                    "semantic_reviewer_model",
+                    config.get(
+                        "escalation_model",
+                        config[
+                            "test_reviewer_model"
+                        ]
+                    )
                 )
 
                 semantic_review = call_model(
@@ -296,7 +299,11 @@ def run_test_contract_phase(
                         implementation_context,
                         merged
                     ),
-                    json_mode=True
+                    json_mode=True,
+                    think=config.get(
+                        "semantic_reviewer_thinking",
+                        False
+                    )
                 )
 
                 if not semantic_review["ok"]:

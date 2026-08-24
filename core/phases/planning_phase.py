@@ -206,11 +206,39 @@ def run_planning_phase(
         )
         return None
 
-    if not test_changes:
+    tests_required = bool(
+        plan.get(
+            "tests_required",
+            True
+        )
+    )
+
+    if (
+        not test_changes
+        and tests_required
+    ):
         print(
-            "No test changes planned."
+            "Tests are required but "
+            "no test changes were planned."
         )
         return None
+
+    if (
+        test_changes
+        and not tests_required
+    ):
+        print(
+            "Planner proposed test changes; "
+            "forcing tests_required=True."
+        )
+        tests_required = True
+        plan["tests_required"] = True
+
+    if not tests_required:
+        print(
+            "No new test contract required "
+            "for this structural change."
+        )
 
     return {
         "plan":
@@ -223,5 +251,8 @@ def run_planning_phase(
             implementation_changes,
 
         "test_changes":
-            test_changes
+            test_changes,
+
+        "tests_required":
+            tests_required
     }

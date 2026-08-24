@@ -1,7 +1,9 @@
 import argparse
+import subprocess
 from pathlib import Path
 
 from core.pipeline import run_pipeline
+from core.repository import git_restore_all
 from core.project_context import (
     build_project_context,
     format_project_context_report,
@@ -39,6 +41,15 @@ def parse_args():
             "Explicit project source/spec to use "
             "as the current work item. "
             "Path is relative to the project."
+        )
+    )
+
+    parser.add_argument(
+        "--spec-dir",
+        help=(
+            "Run all .md specs in a directory "
+            "sequentially. Path is relative to "
+            "the project."
         )
     )
 
@@ -93,6 +104,201 @@ def resolve_project(
     return project
 
 
+def discover_spec_queue(
+    project,
+    spec_dir
+):
+    directory = (
+        project
+        / spec_dir
+    ).resolve()
+
+    try:
+        directory.relative_to(
+            project
+        )
+    except ValueError:
+        raise ValueError(
+            "Spec directory must be inside "
+            "the project repository."
+        )
+
+    if not directory.exists():
+        raise ValueError(
+            f"Spec directory does not exist: "
+            f"{directory}"
+        )
+
+    if not directory.is_dir():
+        raise ValueError(
+            f"Spec directory is not a directory: "
+            f"{directory}"
+        )
+
+    specs = sorted(
+        path
+        for path
+        in directory.glob("*.md")
+        if path.is_file()
+    )
+
+    if not specs:
+        raise ValueError(
+            f"No .md specs found in: "
+            f"{directory}"
+        )
+
+    return [
+        str(
+            path.relative_to(
+                project
+            )
+        )
+        for path
+        in specs
+    ]
+
+
+def spec_already_completed(
+    project,
+    spec_path
+):
+    expected = (
+        "agent: complete "
+        + Path(spec_path).stem
+    )
+
+    result = subprocess.run(
+        [
+            "git",
+            "log",
+            "--format=%s",
+        ],
+        cwd=project,
+        check=True,
+        capture_output=True,
+        text=True
+    )
+
+    return expected in {
+        line.strip()
+        for line in result.stdout.splitlines()
+    }
+
+
+def commit_spec_result(
+    project,
+    spec_path
+):
+    subprocess.run(
+        [
+            "git",
+            "add",
+            "-A",
+        ],
+        cwd=project,
+        check=True
+    )
+
+    status = subprocess.run(
+        [
+            "git",
+            "status",
+            "--porcelain",
+        ],
+        cwd=project,
+        check=True,
+        capture_output=True,
+        text=True
+    )
+
+    if not status.stdout.strip():
+        print(
+            "No repository changes "
+            "to commit."
+        )
+        return True
+
+    message = (
+        "agent: complete "
+        + Path(
+            spec_path
+        ).stem
+    )
+
+    subprocess.run(
+        [
+            "git",
+            "commit",
+            "-m",
+            message,
+        ],
+        cwd=project,
+        check=True
+    )
+
+    return True
+
+
+def run_single_spec(
+    config,
+    project,
+    spec_path
+):
+    context = build_project_context(
+        project,
+        selected_source_path=
+            spec_path,
+        isolate_selected_source=True
+    )
+
+    print()
+    print(
+        format_project_context_report(
+            context
+        )
+    )
+
+    if (
+        context["status"]
+        != "resolved"
+    ):
+        print()
+        print(
+            "Spec context could not "
+            "be resolved."
+        )
+        return False
+
+    current_work = context[
+        "current_work"
+    ]
+
+    run_config = dict(
+        config
+    )
+
+    run_config[
+        "selected_source"
+    ] = current_work[
+        "path"
+    ]
+
+    run_config[
+        "project_context"
+    ] = context
+
+    run_config["resume"] = False
+
+    return run_pipeline(
+        run_config,
+        current_work[
+            "content"
+        ],
+        VERSION
+    )
+
+
 def main():
     args = parse_args()
 
@@ -122,6 +328,26 @@ def main():
         args.resume
     )
 
+    if (
+        args.spec
+        and args.spec_dir
+    ):
+        print(
+            "--spec and --spec-dir "
+            "cannot be used together."
+        )
+        return 1
+
+    if (
+        args.resume
+        and args.spec_dir
+    ):
+        print(
+            "--resume cannot currently "
+            "be used with --spec-dir."
+        )
+        return 1
+
     if args.resume_info:
         inspection = inspect_resume_state(
             config,
@@ -134,6 +360,153 @@ def main():
                 inspection
             )
         )
+
+        return 0
+
+    if args.spec_dir:
+        try:
+            spec_queue = discover_spec_queue(
+                project,
+                args.spec_dir
+            )
+
+        except ValueError as exc:
+            print(exc)
+            return 1
+
+        print()
+        print("=" * 60)
+        print("MULTI-SPEC RUN")
+        print("=" * 60)
+
+        for index, spec_path in enumerate(
+            spec_queue,
+            start=1
+        ):
+            print()
+            print(
+                f"[{index}/{len(spec_queue)}] "
+                f"{spec_path}"
+            )
+
+        completed = []
+
+        for index, spec_path in enumerate(
+            spec_queue,
+            start=1
+        ):
+            if spec_already_completed(
+                project,
+                spec_path
+            ):
+                print()
+                print(
+                    f"SKIP completed spec: "
+                    f"{spec_path}"
+                )
+                completed.append(
+                    spec_path
+                )
+                continue
+
+            print()
+            print("=" * 60)
+            print(
+                f"SPEC {index}/{len(spec_queue)} "
+                f"- {spec_path}"
+            )
+            print("=" * 60)
+
+            max_spec_attempts = config.get(
+                "max_spec_attempts",
+                5
+            )
+
+            success = False
+
+            for spec_attempt in range(
+                1,
+                max_spec_attempts + 1
+            ):
+                print()
+                print(
+                    f"SPEC ATTEMPT "
+                    f"{spec_attempt}/"
+                    f"{max_spec_attempts}"
+                )
+
+                success = run_single_spec(
+                    config,
+                    project,
+                    spec_path
+                )
+
+                if success:
+                    break
+
+                print()
+                print(
+                    "Spec attempt failed. "
+                    "Restoring last committed "
+                    "repository state before retry."
+                )
+
+                git_restore_all(
+                    project
+                )
+
+            if not success:
+                print()
+                print("=" * 60)
+                print("MULTI-SPEC RUN STOPPED")
+                print("=" * 60)
+                print(
+                    f"Failed spec: {spec_path}"
+                )
+                print(
+                    f"Attempts: "
+                    f"{max_spec_attempts}"
+                )
+                print(
+                    f"Completed: "
+                    f"{len(completed)}/"
+                    f"{len(spec_queue)}"
+                )
+
+                return 1
+
+            try:
+                commit_spec_result(
+                    project,
+                    spec_path
+                )
+
+            except subprocess.CalledProcessError as exc:
+                print()
+                print(
+                    "Automatic commit failed: "
+                    f"{exc}"
+                )
+                return 1
+
+            completed.append(
+                spec_path
+            )
+
+        print()
+        print("=" * 60)
+        print("MULTI-SPEC RUN PASSED")
+        print("=" * 60)
+        print(
+            f"Completed: "
+            f"{len(completed)}/"
+            f"{len(spec_queue)}"
+        )
+
+        for spec_path in completed:
+            print(
+                f"- PASS {spec_path}"
+            )
 
         return 0
 

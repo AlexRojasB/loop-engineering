@@ -33,3 +33,38 @@ Return only one or more new test methods.
 
 No Markdown.
 No explanation.
+
+CRITICAL TDD REQUIREMENT:
+
+The generated tests MUST exercise the requested NEW behavior directly.
+
+At least one generated test MUST fail against CURRENT PRODUCTION for a reason
+caused specifically by the requested feature not being implemented yet.
+
+Examples:
+
+- If the task adds a public property, directly assert that property's required
+  initial value and/or its value after the requested operation.
+
+- If the task adds a method, invoke that future public method directly.
+
+- If the task changes state, assert the exact requested state transition.
+
+- If the task adds accumulation behavior, assert the accumulated value after
+  multiple operations.
+
+- If the task adds filtering/query behavior, assert the exact returned items.
+
+Do NOT generate tests that merely re-test existing behavior.
+
+Do NOT weaken the contract to avoid compilation failures caused by public
+members explicitly required by the task.
+
+A missing future public member is an EXPECTED RED condition.
+
+Before returning the tests, ask:
+
+"Would at least one of these tests fail against the unchanged production code
+because the requested feature is still missing?"
+
+If the answer is NO, the generated tests are invalid and must be strengthened.

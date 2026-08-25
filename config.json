@@ -14,5 +14,9 @@
   "max_test_repairs": 4,
   "semantic_reviewer_model": "qwen3.5:9b",
   "semantic_reviewer_thinking": true,
-  "max_spec_attempts": 5
+  "max_spec_attempts": 5,
+  "agentic_implementation_enabled": true,
+  "agentic_model": "qwen3.5:4b",
+  "agentic_context_size": 16384,
+  "agentic_max_steps": 40
 }

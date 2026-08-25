@@ -3,6 +3,7 @@ from time import perf_counter
 from core.phases.build_phase import run_build_phase
 from core.phases.expected_red_phase import run_expected_red_phase
 from core.phases.implementation_phase import run_implementation_phase
+from core.phases.agentic_implementation_phase import run_agentic_implementation_phase
 from core.phases.planning_phase import run_planning_phase
 from core.phases.review_phase import run_review_phase
 from core.phases.test_contract_phase import run_test_contract_phase
@@ -427,16 +428,38 @@ def run_pipeline(
         )
         or implementation_incomplete
     ):
-        if not timed_phase(
-            "implementation",
-            lambda: run_implementation_phase(
-                config,
-                workspace,
-                task,
-                state,
-                implementation_changes
-            )
+        if config.get(
+            "agentic_implementation_enabled",
+            False
         ):
+            implementation_result = timed_phase(
+                "implementation",
+                lambda:
+                    run_agentic_implementation_phase(
+                        config,
+                        workspace,
+                        task,
+                        state,
+                        implementation_changes,
+                        build_command,
+                        test_command
+                    )
+            )
+
+        else:
+            implementation_result = timed_phase(
+                "implementation",
+                lambda:
+                    run_implementation_phase(
+                        config,
+                        workspace,
+                        task,
+                        state,
+                        implementation_changes
+                    )
+            )
+
+        if not implementation_result:
             return finish(False)
 
     else:

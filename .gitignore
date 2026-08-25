@@ -1,8 +1,24 @@
-
 # Python
 __pycache__/
 *.py[cod]
+.venv/
+venv/
 
 # Agent runtime
 runtime/*.json
 runtime/*.jsonl
+.agent/
+
+# Execution logs
+run-*.txt
+*.log
+
+# Local environment / secrets
+.env
+.env.*
+!.env.example
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

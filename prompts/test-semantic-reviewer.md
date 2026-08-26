@@ -14,6 +14,26 @@ You audit ONLY the Arrange/setup semantics of generated tests.
 
 {tests}
 
+# Previously Raised Concerns In This Test Contract Run
+
+{prior_issues}
+
+These are concerns raised by earlier review attempts against this same
+test contract, in this same Test Contract run. They are NOT automatically
+still valid — the contract may already have been corrected since they
+were raised.
+
+For each concern listed above, decide independently, from the CURRENT
+proposed tests above, whether it is:
+
+- RESOLVED (do not reject for it), or
+- STILL PRESENT (the contract must not be approved; include it in your
+  issues).
+
+Do not reject solely because a concern was raised before. Reject only if,
+on your own reading of the CURRENT proposed tests, that concern (or an
+equivalent defect) is actually still there.
+
 # Scope
 
 Assume every new method, enum value, and behavior described by the Task WILL exist after implementation.
@@ -54,6 +74,10 @@ RefundOrder may not exist yet. If the Task requires it, that is NOT a defect.
 REJECT only for a concrete setup/identity/prerequisite defect.
 
 Otherwise APPROVE.
+
+Before returning APPROVE, confirm every item under "Previously Raised
+Concerns In This Test Contract Run" is RESOLVED. If any is STILL PRESENT,
+return REJECT and include it in issues.
 
 # Output
 

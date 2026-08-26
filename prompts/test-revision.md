@@ -16,6 +16,16 @@ CURRENT NEW TEST METHODS:
 
 {snippet}
 
+PREVIOUSLY RAISED CONCERNS IN THIS TEST CONTRACT RUN:
+
+{prior_issues}
+
+These are concerns raised by earlier review attempts against this same
+test contract, in this same run. They are not guaranteed to still apply —
+some may already be resolved by an earlier correction. When correcting the
+test methods below, make sure none of these concerns are still present or
+reintroduced by your correction, in addition to fixing the ISSUES below.
+
 ISSUES:
 
 {issues}

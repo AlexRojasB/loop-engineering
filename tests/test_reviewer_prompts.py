@@ -95,7 +95,8 @@ class SemanticReviewerPromptTests(unittest.TestCase):
             "test-semantic-reviewer.md",
             task=LEDGER_TASK,
             production=LEDGER_PRODUCTION,
-            tests=LEDGER_BAD_SNIPPET_QUANTITATIVE_CONTRADICTION
+            tests=LEDGER_BAD_SNIPPET_QUANTITATIVE_CONTRADICTION,
+            prior_issues="(none raised yet in this Test Contract run)"
         )
 
         self.assertIn(LEDGER_TASK, rendered)
@@ -138,7 +139,8 @@ class StructuralReviewerPromptTests(unittest.TestCase):
             "test-reviewer.md",
             task=WIDGET_TASK,
             production=WIDGET_PRODUCTION,
-            tests=WIDGET_BAD_SNIPPET_FRESH_INSTANCE_GUARD
+            tests=WIDGET_BAD_SNIPPET_FRESH_INSTANCE_GUARD,
+            prior_issues="(none raised yet in this Test Contract run)"
         )
 
         self.assertIn(WIDGET_TASK, rendered)

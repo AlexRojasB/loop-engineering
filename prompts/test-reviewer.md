@@ -14,6 +14,26 @@ You are reviewing a FUTURE TEST CONTRACT in a strict test-first / TDD workflow.
 
 {tests}
 
+# Previously Raised Concerns In This Test Contract Run
+
+{prior_issues}
+
+These are concerns raised by earlier review attempts against this same
+test contract, in this same Test Contract run. They are NOT automatically
+still valid — the contract may already have been corrected since they
+were raised.
+
+For each concern listed above, decide independently, from the CURRENT
+test file above, whether it is:
+
+- RESOLVED (do not reject for it), or
+- STILL PRESENT (the contract must not be approved; include it in your
+  issues).
+
+Do not reject solely because a concern was raised before. Reject only if,
+on your own reading of the CURRENT test file, that concern (or an
+equivalent defect) is actually still there.
+
 # Critical TDD Context
 
 The requested feature has NOT been implemented yet.
@@ -86,6 +106,10 @@ If rejecting, every issue MUST describe a defect in the TEST CONTRACT itself, su
 - invalid expected result
 
 Do not report missing future implementation as an issue.
+
+Before returning APPROVE, confirm every item under "Previously Raised
+Concerns In This Test Contract Run" is RESOLVED. If any is STILL PRESENT,
+return REJECT and include it in issues.
 
 ## Future Contract Rules
 

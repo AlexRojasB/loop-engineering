@@ -38,12 +38,72 @@ def test_snippet_prompt(
     )
 
 
+def _format_issue_item(issue):
+    if isinstance(issue, str):
+        return issue
+
+    return json.dumps(issue)
+
+
+def format_prior_issues(rejection_memory):
+    """
+    Render accumulated per-contract rejection memory as prose for a
+    prompt, framed as concerns to re-evaluate against the CURRENT
+    contract rather than defects that are still assumed to hold.
+    """
+
+    lines = []
+
+    for entry in (rejection_memory or []):
+        for issue in entry.get("issues", []):
+            lines.append(
+                f"- [{entry['reviewer']} reviewer, "
+                f"attempt {entry['attempt']}] "
+                f"{_format_issue_item(issue)}"
+            )
+
+    if not lines:
+        return (
+            "(none raised yet in this Test Contract run)"
+        )
+
+    return "\n".join(lines)
+
+
+def normalize_reviewer_decision(review_json):
+    """
+    A reviewer that returns APPROVE alongside a non-empty issues list
+    has contradicted itself. Treat that as REJECT regardless of the
+    literal decision field, so a self-contradictory verdict can never
+    freeze a contract.
+    """
+
+    decision = review_json.get(
+        "decision",
+        ""
+    ).upper()
+
+    issues = review_json.get(
+        "issues",
+        []
+    )
+
+    if (
+        decision == "APPROVE"
+        and issues
+    ):
+        decision = "REJECT"
+
+    return decision, issues
+
+
 def test_snippet_revision_prompt(
     task,
     implementation_files,
     original_test_content,
     snippet,
-    issues
+    issues,
+    prior_issues=None
 ):
     return render_prompt(
         "test-revision.md",
@@ -56,6 +116,9 @@ def test_snippet_revision_prompt(
         issues=json.dumps(
             issues,
             indent=2
+        ),
+        prior_issues=format_prior_issues(
+            prior_issues
         )
     )
 
@@ -63,7 +126,8 @@ def test_snippet_revision_prompt(
 def test_review_prompt(
     task,
     implementation_files,
-    merged_test_content
+    merged_test_content,
+    prior_issues=None
 ):
     return render_prompt(
         "test-reviewer.md",
@@ -71,14 +135,18 @@ def test_review_prompt(
         production=implementation_text(
             implementation_files
         ),
-        tests=merged_test_content
+        tests=merged_test_content,
+        prior_issues=format_prior_issues(
+            prior_issues
+        )
     )
 
 
 def semantic_test_review_prompt(
     task,
     implementation_files,
-    merged_test_content
+    merged_test_content,
+    prior_issues=None
 ):
     return render_prompt(
         "test-semantic-reviewer.md",
@@ -86,7 +154,10 @@ def semantic_test_review_prompt(
         production=implementation_text(
             implementation_files
         ),
-        tests=merged_test_content
+        tests=merged_test_content,
+        prior_issues=format_prior_issues(
+            prior_issues
+        )
     )
 
 
@@ -170,6 +241,35 @@ def run_test_contract_phase(
 
         approved = False
 
+        # Per-contract rejection memory: every issue raised by the
+        # structural reviewer, semantic reviewer, or semantic
+        # confirmation for THIS test_change, across all attempts in
+        # THIS run_test_contract_phase call. Not persisted beyond it.
+        rejection_memory = []
+
+        def revise(issues_for_this_revision):
+            revision = call_model(
+                config,
+                config[
+                    "coder_model"
+                ],
+                test_snippet_revision_prompt(
+                    task,
+                    implementation_context,
+                    original,
+                    snippet,
+                    issues_for_this_revision,
+                    prior_issues=rejection_memory
+                )
+            )
+
+            if revision["ok"]:
+                return extract_code(
+                    revision["response"]
+                )
+
+            return snippet
+
         for attempt in range(
             1,
             config[
@@ -200,30 +300,7 @@ def run_test_contract_phase(
                         f"- {issue}"
                     )
 
-                revision = call_model(
-                    config,
-                    config[
-                        "coder_model"
-                    ],
-                    test_snippet_revision_prompt(
-                        task,
-                        implementation_context,
-                        original,
-                        snippet,
-                        issues
-                    )
-                )
-
-                if not revision[
-                    "ok"
-                ]:
-                    continue
-
-                snippet = extract_code(
-                    revision[
-                        "response"
-                    ]
-                )
+                snippet = revise(issues)
 
                 continue
 
@@ -247,7 +324,8 @@ def run_test_contract_phase(
                 test_review_prompt(
                     task,
                     implementation_context,
-                    merged
+                    merged,
+                    prior_issues=rejection_memory
                 ),
                 json_mode=True,
                 think=config.get(
@@ -293,114 +371,196 @@ def run_test_contract_phase(
                 )
             )
 
-            if (
-                review_json.get(
-                    "decision",
-                    ""
-                ).upper()
-                == "APPROVE"
-            ):
-                semantic_model = config.get(
-                    "semantic_reviewer_model",
-                    config.get(
-                        "escalation_model",
-                        config[
-                            "test_reviewer_model"
-                        ]
-                    )
-                )
-
-                semantic_review = call_model(
-                    config,
-                    semantic_model,
-                    semantic_test_review_prompt(
-                        task,
-                        implementation_context,
-                        merged
-                    ),
-                    json_mode=True,
-                    think=config.get(
-                        "semantic_reviewer_thinking",
-                        False
-                    )
-                )
-
-                if not semantic_review["ok"]:
-                    continue
-
-                if semantic_review.get(
-                    "thinking"
-                ):
-                    append_history(
-                        config,
-                        "test_review_reasoning",
-                        {
-                            "file": path,
-                            "attempt": attempt,
-                            "reviewer": "semantic",
-                            "thinking":
-                                semantic_review["thinking"]
-                        }
-                    )
-
-                try:
-                    semantic_json = json.loads(
-                        semantic_review[
-                            "response"
-                        ]
-                    )
-
-                except json.JSONDecodeError:
-                    continue
-
-                print()
-                print(
-                    "Semantic contract audit:"
-                )
-                print(
-                    json.dumps(
-                        semantic_json,
-                        indent=2
-                    )
-                )
-
-                if (
-                    semantic_json.get(
-                        "decision",
-                        ""
-                    ).upper()
-                    == "APPROVE"
-                ):
-                    approved = True
-                    break
-
-                review_json = semantic_json
-
-            revision = call_model(
-                config,
-                config[
-                    "coder_model"
-                ],
-                test_snippet_revision_prompt(
-                    task,
-                    implementation_context,
-                    original,
-                    snippet,
-                    review_json.get(
-                        "issues",
-                        []
-                    )
+            structural_decision, structural_issues = (
+                normalize_reviewer_decision(
+                    review_json
                 )
             )
 
-            if revision[
-                "ok"
-            ]:
-                snippet = extract_code(
-                    revision[
+            if structural_decision != "APPROVE":
+                rejection_memory.append(
+                    {
+                        "attempt": attempt,
+                        "reviewer": "structural",
+                        "issues": structural_issues
+                    }
+                )
+
+                snippet = revise(structural_issues)
+
+                continue
+
+            semantic_model = config.get(
+                "semantic_reviewer_model",
+                config.get(
+                    "escalation_model",
+                    config[
+                        "test_reviewer_model"
+                    ]
+                )
+            )
+
+            semantic_review = call_model(
+                config,
+                semantic_model,
+                semantic_test_review_prompt(
+                    task,
+                    implementation_context,
+                    merged,
+                    prior_issues=rejection_memory
+                ),
+                json_mode=True,
+                think=config.get(
+                    "semantic_reviewer_thinking",
+                    False
+                )
+            )
+
+            if not semantic_review["ok"]:
+                continue
+
+            if semantic_review.get(
+                "thinking"
+            ):
+                append_history(
+                    config,
+                    "test_review_reasoning",
+                    {
+                        "file": path,
+                        "attempt": attempt,
+                        "reviewer": "semantic",
+                        "thinking":
+                            semantic_review["thinking"]
+                    }
+                )
+
+            try:
+                semantic_json = json.loads(
+                    semantic_review[
                         "response"
                     ]
                 )
+
+            except json.JSONDecodeError:
+                continue
+
+            print()
+            print(
+                "Semantic contract audit:"
+            )
+            print(
+                json.dumps(
+                    semantic_json,
+                    indent=2
+                )
+            )
+
+            semantic_decision, semantic_issues = (
+                normalize_reviewer_decision(
+                    semantic_json
+                )
+            )
+
+            if semantic_decision != "APPROVE":
+                rejection_memory.append(
+                    {
+                        "attempt": attempt,
+                        "reviewer": "semantic",
+                        "issues": semantic_issues
+                    }
+                )
+
+                snippet = revise(semantic_issues)
+
+                continue
+
+            if not rejection_memory:
+                # Clean first-time APPROVE: nothing in this run has
+                # ever been rejected for this test_change, so a
+                # single semantic APPROVE is sufficient.
+                approved = True
+                break
+
+            # This test_change was rejected at least once earlier in
+            # this run. A single stochastic APPROVE is not enough on
+            # its own — require one independent confirming review of
+            # the SAME current contract before freezing it. This does
+            # NOT consume its own attempt slot; it is validation of
+            # the current attempt, not a new generation attempt.
+            confirmation = call_model(
+                config,
+                semantic_model,
+                semantic_test_review_prompt(
+                    task,
+                    implementation_context,
+                    merged,
+                    prior_issues=rejection_memory
+                ),
+                json_mode=True,
+                think=config.get(
+                    "semantic_reviewer_thinking",
+                    False
+                )
+            )
+
+            if not confirmation["ok"]:
+                continue
+
+            if confirmation.get(
+                "thinking"
+            ):
+                append_history(
+                    config,
+                    "test_review_reasoning",
+                    {
+                        "file": path,
+                        "attempt": attempt,
+                        "reviewer": "semantic_confirmation",
+                        "thinking":
+                            confirmation["thinking"]
+                    }
+                )
+
+            try:
+                confirmation_json = json.loads(
+                    confirmation[
+                        "response"
+                    ]
+                )
+
+            except json.JSONDecodeError:
+                continue
+
+            print()
+            print(
+                "Semantic confirmation audit:"
+            )
+            print(
+                json.dumps(
+                    confirmation_json,
+                    indent=2
+                )
+            )
+
+            confirmation_decision, confirmation_issues = (
+                normalize_reviewer_decision(
+                    confirmation_json
+                )
+            )
+
+            if confirmation_decision == "APPROVE":
+                approved = True
+                break
+
+            rejection_memory.append(
+                {
+                    "attempt": attempt,
+                    "reviewer": "semantic_confirmation",
+                    "issues": confirmation_issues
+                }
+            )
+
+            snippet = revise(confirmation_issues)
 
         if not approved:
             print(

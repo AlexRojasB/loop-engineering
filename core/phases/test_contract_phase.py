@@ -249,13 +249,32 @@ def run_test_contract_phase(
                     implementation_context,
                     merged
                 ),
-                json_mode=True
+                json_mode=True,
+                think=config.get(
+                    "test_reviewer_thinking",
+                    False
+                )
             )
 
             if not review[
                 "ok"
             ]:
                 continue
+
+            if review.get(
+                "thinking"
+            ):
+                append_history(
+                    config,
+                    "test_review_reasoning",
+                    {
+                        "file": path,
+                        "attempt": attempt,
+                        "reviewer": "structural",
+                        "thinking":
+                            review["thinking"]
+                    }
+                )
 
             try:
                 review_json = json.loads(
@@ -308,6 +327,21 @@ def run_test_contract_phase(
 
                 if not semantic_review["ok"]:
                     continue
+
+                if semantic_review.get(
+                    "thinking"
+                ):
+                    append_history(
+                        config,
+                        "test_review_reasoning",
+                        {
+                            "file": path,
+                            "attempt": attempt,
+                            "reviewer": "semantic",
+                            "thinking":
+                                semantic_review["thinking"]
+                        }
+                    )
 
                 try:
                     semantic_json = json.loads(

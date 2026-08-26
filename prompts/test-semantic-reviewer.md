@@ -99,5 +99,49 @@ Validate all three together:
 
 REJECT when the setup reaches a state different from the state the test claims to exercise, or when the assertion contradicts the task for that effective state.
 
+## Numeric and quantitative invariants
+
+Effective state is not limited to named/enum-like states such as Pending,
+Paid, or Refunded. It also includes any numeric field production code
+mutates as part of a successful action: counters, balances, quantities,
+totals, and collection sizes.
+
+Trace numeric mutations the same way you trace categorical transitions:
+
+1. Identify every arithmetic mutation in the production method under test
+   (`+=`, `-=`, increment, decrement, `Add`/`Remove` on a collection whose
+   `Count`/`Length` is asserted, or an equivalent field reassignment).
+2. Determine whether the tested action, given the Arrange state and the
+   assertion of success/failure, will execute that mutation.
+3. Compare the test's assertion about that numeric field against what the
+   mutation actually produces.
+
+Reject when a test asserts a numeric field is unchanged after an action the
+test itself asserts succeeded, if production code unconditionally mutates
+that field on success, unless the authoritative task explicitly changes that
+behavior.
+
+Example invalid setup (quantitative-state contradiction):
+
+    var originalBalance = account.Balance;
+    Assert.True(ledger.Withdraw(account.Id, 20));
+    Assert.Equal(originalBalance, account.Balance);
+
+If `Withdraw` unconditionally applies `balance -= amount` whenever it
+returns true, a successful Withdraw call MUST reduce Balance. Asserting
+Balance is unchanged directly contradicts that mutation. REJECT.
+
+Example valid setup:
+
+    var originalBalance = account.Balance;
+    Assert.True(ledger.Withdraw(account.Id, 20));
+    Assert.Equal(originalBalance - 20, account.Balance);
+
+Do NOT reject a numeric-invariant assertion when the authoritative task is
+itself the one requesting the changed behavior (for example, the task
+explicitly states that a certain kind of operation must NOT affect the
+balance/counter/quantity). In that case the "unchanged" assertion is the
+correct specification, not a contradiction.
+
 Do NOT reject merely because the requested method or enum does not exist yet.
 Do NOT require extra assertions for valid setup operations.

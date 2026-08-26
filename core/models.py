@@ -47,17 +47,20 @@ def ollama(
             ""
         )
 
+        thinking_text = result.get(
+            "thinking"
+        )
+
         if (
             not response_text.strip()
-            and result.get("thinking")
+            and thinking_text
         ):
-            response_text = result[
-                "thinking"
-            ]
+            response_text = thinking_text
 
         return {
             "ok": True,
             "response": response_text,
+            "thinking": thinking_text,
             "error": None
         }
 
@@ -68,6 +71,7 @@ def ollama(
         return {
             "ok": False,
             "response": None,
+            "thinking": None,
             "error":
                 f"{model} timed out after {timeout}s"
         }
@@ -76,6 +80,7 @@ def ollama(
         return {
             "ok": False,
             "response": None,
+            "thinking": None,
             "error":
                 f"{type(exc).__name__}: {exc}"
         }

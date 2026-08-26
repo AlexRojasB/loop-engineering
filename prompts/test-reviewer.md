@@ -146,6 +146,29 @@ Specifically:
 - Verify state transitions sequentially: if a test requires Paid -> Refunded, confirm the setup can actually transition the same entity from Pending -> Paid before testing RefundOrder.
 - Do not approve a test merely because it compiles after the requested feature exists.
 - Reject tests whose Arrange phase makes the asserted behavior unreachable.
+- When the test constructs a brand-new instance of the subject under test (for example `var sut = new SomeService();`) at the start of the test method, trace exactly what could exist immediately afterward: nothing but that instance's own default state. Any lookup performed against it before any state-mutating call has been made can only return "not found" / empty / default.
+- Reject a defensive lookup-then-create pattern (for example, an `if (sut.Find(x) == null)` block that creates `x` inside it) when the branch it guards is logically predetermined by the fresh instance — the guarded branch always executes and the alternate branch can never be reached. Treat any assertion inside that always-taken branch as unconditional, and verify it against known production behavior for that operation.
+- Verify that assertions describing the outcome of setup operations, not only the final tested action, match known production behavior. A setup call whose asserted result contradicts what the production code returns for that input is a test-contract defect, even when it happens before the "real" tested action.
+
+## Fresh-Instance Setup Example
+
+Example invalid setup (fresh-instance contradictory setup):
+
+    var registry = new WidgetRegistry();
+    var widget = registry.FindByCode("W-1");
+    Assert.False(registry.Register("W-1", 10));
+
+`registry` was constructed on the line directly above. No widget with code
+"W-1" can already exist, so `FindByCode` is guaranteed to return null, and
+`Register("W-1", 10)` is guaranteed to be a valid, previously-unused
+registration. Asserting that `Register` returns false here contradicts the
+production contract for a valid new entity. REJECT.
+
+Example valid setup:
+
+    var registry = new WidgetRegistry();
+    Assert.True(registry.Register("W-1", 10));
+    var widget = registry.FindByCode("W-1");
 
 When reviewing a stateful test, reason through:
 

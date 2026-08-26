@@ -1,3 +1,4 @@
+import shlex
 from abc import ABC, abstractmethod
 
 
@@ -15,6 +16,36 @@ class LanguageAdapter(ABC):
     @abstractmethod
     def test_command(self, workspace_files):
         raise NotImplementedError
+
+    def build_argv(self, workspace_files):
+        """
+        Structured argv equivalent of build_command(), for callers that
+        must invoke the build without a shell. Generic fallback:
+        tokenize the command string this adapter already produces
+        internally (safe here since it is built from known repository
+        paths, not external input).
+        """
+        return shlex.split(
+            self.build_command(workspace_files)
+        )
+
+    def test_argv(self, workspace_files, filter=None):
+        """
+        Structured argv equivalent of test_command(), optionally scoped
+        to a single test filter expression. The filter, when supported,
+        must be appended as its own argv element and never interpolated
+        into a command string.
+
+        Returns None when a filter is requested but this adapter has no
+        structured filter support, so callers can reject the request
+        instead of silently ignoring the filter.
+        """
+        if filter:
+            return None
+
+        return shlex.split(
+            self.test_command(workspace_files)
+        )
 
     def classify_red_state(self, output):
         return None

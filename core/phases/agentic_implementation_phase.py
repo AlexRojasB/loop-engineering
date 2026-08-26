@@ -119,32 +119,96 @@ def _list_files(
     )
 
 
-def _run_command(
-    root,
-    command,
-    build_command,
-    test_command
-):
-    allowed = {
-        build_command,
-        test_command,
-        "git status --short",
-        "git diff",
-    }
+SUPPORTED_OPERATIONS = (
+    "build",
+    "test",
+    "test_filtered",
+    "git_status",
+    "git_diff",
+)
 
-    if command not in allowed:
+
+def _resolve_operation_argv(
+    operation,
+    filter_value,
+    adapter,
+    repository_files
+):
+    """
+    Translate a structured operation request into a subprocess argv
+    list. Never builds a shell command string: every element returned
+    here becomes its own subprocess argument, so shell metacharacters
+    in a filter value (&&, ;, |, >, $(), backticks, ...) cannot become
+    shell syntax.
+
+    Returns (argv, error). Exactly one of the two is None.
+    """
+
+    if operation == "build":
         return (
-            "COMMAND REJECTED.\n"
-            "Allowed commands:\n- "
-            + "\n- ".join(
-                sorted(allowed)
-            )
+            adapter.build_argv(
+                repository_files
+            ),
+            None
         )
 
+    if operation == "test":
+        return (
+            adapter.test_argv(
+                repository_files
+            ),
+            None
+        )
+
+    if operation == "test_filtered":
+        if not filter_value:
+            return (
+                None,
+                "OPERATION REJECTED: "
+                "'test_filtered' requires a "
+                "non-empty 'filter' argument."
+            )
+
+        argv = adapter.test_argv(
+            repository_files,
+            filter=filter_value
+        )
+
+        if argv is None:
+            return (
+                None,
+                "OPERATION REJECTED: this "
+                "project's language adapter "
+                "does not support filtered "
+                "test execution."
+            )
+
+        return (argv, None)
+
+    if operation == "git_status":
+        return (
+            ["git", "status", "--short"],
+            None
+        )
+
+    if operation == "git_diff":
+        return (
+            ["git", "diff"],
+            None
+        )
+
+    return (
+        None,
+        "OPERATION REJECTED.\n"
+        "Supported operations:\n- "
+        + "\n- ".join(SUPPORTED_OPERATIONS)
+    )
+
+
+def _run_argv(root, argv):
     result = subprocess.run(
-        command,
+        argv,
         cwd=root,
-        shell=True,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -164,6 +228,26 @@ def _run_command(
         f"exit_code={result.returncode}\n"
         f"{output}"
     )
+
+
+def _run_operation(
+    root,
+    operation,
+    filter_value,
+    adapter,
+    repository_files
+):
+    argv, error = _resolve_operation_argv(
+        operation,
+        filter_value,
+        adapter,
+        repository_files
+    )
+
+    if error is not None:
+        return error
+
+    return _run_argv(root, argv)
 
 
 def _tools():
@@ -239,21 +323,51 @@ def _tools():
         {
             "type": "function",
             "function": {
-                "name": "run_command",
+                "name": "run_operation",
                 "description":
-                    "Run the project build, "
-                    "project tests, or an "
-                    "allowed Git inspection.",
+                    "Run a structured, safe repository "
+                    "operation: build the project, run "
+                    "the full test suite, run a single "
+                    "test filter, or inspect Git status/"
+                    "diff. Arbitrary shell commands are "
+                    "not supported; the harness "
+                    "constructs the real command from "
+                    "the operation you request.",
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "command": {
-                            "type":
-                                "string"
+                        "operation": {
+                            "type": "string",
+                            "enum": list(
+                                SUPPORTED_OPERATIONS
+                            ),
+                            "description":
+                                "build: compile the "
+                                "project. test: run the "
+                                "full test suite. "
+                                "test_filtered: run only "
+                                "tests matching 'filter'. "
+                                "git_status: 'git status "
+                                "--short'. git_diff: "
+                                "'git diff'."
+                        },
+                        "filter": {
+                            "type": "string",
+                            "description":
+                                "Required only for "
+                                "test_filtered. A single "
+                                "test filter expression "
+                                "(e.g. a fully qualified "
+                                "test name or substring), "
+                                "passed directly as a "
+                                "test-runner argument. "
+                                "This is not a shell "
+                                "command and cannot "
+                                "contain shell syntax."
                         }
                     },
                     "required": [
-                        "command"
+                        "operation"
                     ]
                 }
             }
@@ -310,8 +424,8 @@ def _execute_tool(
     root,
     call,
     writable_paths,
-    build_command,
-    test_command
+    adapter,
+    repository_files
 ):
     function = call[
         "function"
@@ -361,12 +475,13 @@ def _execute_tool(
                 )
             )
 
-        if name == "run_command":
-            return _run_command(
+        if name == "run_operation":
+            return _run_operation(
                 root,
-                args["command"],
-                build_command,
-                test_command
+                args.get("operation"),
+                args.get("filter"),
+                adapter,
+                repository_files
             )
 
         return (
@@ -383,8 +498,8 @@ def _execute_tool(
 
 def _validate_final_state(
     root,
-    build_command,
-    test_command
+    adapter,
+    repository_files
 ):
     print()
     print(
@@ -393,11 +508,11 @@ def _validate_final_state(
         "validation."
     )
 
-    build = _run_command(
+    build = _run_argv(
         root,
-        build_command,
-        build_command,
-        test_command
+        adapter.build_argv(
+            repository_files
+        )
     )
 
     print()
@@ -409,11 +524,11 @@ def _validate_final_state(
     ):
         return False
 
-    tests = _run_command(
+    tests = _run_argv(
         root,
-        test_command,
-        build_command,
-        test_command
+        adapter.test_argv(
+            repository_files
+        )
     )
 
     print()
@@ -432,7 +547,9 @@ def run_agentic_implementation_phase(
     state,
     implementation_changes,
     build_command,
-    test_command
+    test_command,
+    adapter,
+    repository_files
 ):
     print()
     print("=" * 60)
@@ -520,13 +637,19 @@ Rules:
 - Do not merely describe actions. Use tools.
 - Do not stop immediately after a failed command.
 
-Required build command:
+Use the run_operation tool for all build/test/Git actions. It does not
+accept arbitrary shell commands; you request one of a fixed set of
+operations and the harness runs the real command for you:
 
-{build_command}
-
-Required test command:
-
-{test_command}
+- operation="build" runs the project build (equivalent to:
+  {build_command})
+- operation="test" runs the full test suite (equivalent to:
+  {test_command})
+- operation="test_filtered" with a "filter" argument runs only tests
+  matching that filter, useful for iterating on a single failing test
+  without rerunning the whole suite
+- operation="git_status" runs git status --short
+- operation="git_diff" runs git diff
 """
 
     user = f"""
@@ -636,8 +759,8 @@ Work until both the required build and test commands succeed.
             success = (
                 _validate_final_state(
                     root,
-                    build_command,
-                    test_command
+                    adapter,
+                    repository_files
                 )
             )
 
@@ -676,8 +799,8 @@ Work until both the required build and test commands succeed.
                 root,
                 call,
                 writable_paths,
-                build_command,
-                test_command
+                adapter,
+                repository_files
             )
 
             print()

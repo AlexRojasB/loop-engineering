@@ -106,6 +106,63 @@ class DotNetAdapter(LanguageAdapter):
 
         return "dotnet test"
 
+    def build_argv(
+        self,
+        workspace_files
+    ):
+        solution = self._find_solution(
+            workspace_files
+        )
+
+        if solution:
+            return ["dotnet", "build", solution]
+
+        project = self._find_project(
+            workspace_files
+        )
+
+        if project:
+            return ["dotnet", "build", project]
+
+        return ["dotnet", "build"]
+
+    def test_argv(
+        self,
+        workspace_files,
+        filter=None
+    ):
+        solution = self._find_solution(
+            workspace_files
+        )
+
+        if solution:
+            argv = ["dotnet", "test", solution]
+
+        else:
+            test_projects = [
+                path
+                for path in workspace_files
+                if path.lower().endswith(
+                    self.PROJECT_EXTENSIONS
+                )
+                and self.is_test_path(path)
+            ]
+
+            if test_projects:
+                argv = [
+                    "dotnet",
+                    "test",
+                    test_projects[0]
+                ]
+
+            else:
+                argv = ["dotnet", "test"]
+
+        if filter:
+            argv = argv + ["--filter", filter]
+
+        return argv
+
     def classify_red_state(
         self,
         output

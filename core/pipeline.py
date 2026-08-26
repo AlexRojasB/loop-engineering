@@ -442,7 +442,9 @@ def run_pipeline(
                         state,
                         implementation_changes,
                         build_command,
-                        test_command
+                        test_command,
+                        adapter,
+                        repository_files
                     )
             )
 

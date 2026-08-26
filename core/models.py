@@ -11,7 +11,9 @@ def ollama(
     prompt,
     timeout,
     json_mode=False,
-    think=False
+    think=False,
+    num_ctx=None,
+    num_predict=None
 ):
     payload = {
         "model": model,
@@ -24,6 +26,17 @@ def ollama(
 
     if think:
         payload["think"] = True
+
+    options = {}
+
+    if num_ctx is not None:
+        options["num_ctx"] = num_ctx
+
+    if num_predict is not None:
+        options["num_predict"] = num_predict
+
+    if options:
+        payload["options"] = options
 
     request = urllib.request.Request(
         OLLAMA_URL,
@@ -51,6 +64,19 @@ def ollama(
             "thinking"
         )
 
+        done_reason = result.get(
+            "done_reason"
+        )
+
+        # Ollama reports "length" when generation was cut off by the
+        # output/context budget rather than reaching a natural stop.
+        # With json_mode on, the grammar-constrained decoder force-
+        # closes braces/quotes on cutoff, so a truncated response can
+        # still parse as syntactically valid JSON while its content is
+        # incomplete. done_reason is the only reliable signal for
+        # that — do not infer truncation from response text shape.
+        truncated = done_reason == "length"
+
         if (
             not response_text.strip()
             and thinking_text
@@ -61,6 +87,8 @@ def ollama(
             "ok": True,
             "response": response_text,
             "thinking": thinking_text,
+            "done_reason": done_reason,
+            "truncated": truncated,
             "error": None
         }
 
@@ -72,6 +100,8 @@ def ollama(
             "ok": False,
             "response": None,
             "thinking": None,
+            "done_reason": None,
+            "truncated": False,
             "error":
                 f"{model} timed out after {timeout}s"
         }
@@ -81,6 +111,8 @@ def ollama(
             "ok": False,
             "response": None,
             "thinking": None,
+            "done_reason": None,
+            "truncated": False,
             "error":
                 f"{type(exc).__name__}: {exc}"
         }
@@ -92,7 +124,9 @@ def call_model(
     prompt,
     json_mode=False,
     reduced_prompt=None,
-    think=False
+    think=False,
+    num_ctx=None,
+    num_predict=None
 ):
     result = ollama(
         model,
@@ -102,7 +136,9 @@ def call_model(
             420
         ),
         json_mode=json_mode,
-        think=think
+        think=think,
+        num_ctx=num_ctx,
+        num_predict=num_predict
     )
 
     if result["ok"]:
@@ -128,5 +164,7 @@ def call_model(
             300
         ),
         json_mode=json_mode,
-        think=think
+        think=think,
+        num_ctx=num_ctx,
+        num_predict=num_predict
     )

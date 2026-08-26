@@ -40,6 +40,8 @@ INVENTORY_SPECIFIC_TERMS = (
     "sku",
     "reservation",
     "reserve(",
+    "reservedquantity",
+    "availablequantity",
 )
 
 
@@ -103,6 +105,37 @@ class SemanticReviewerPromptTests(unittest.TestCase):
         self.assertIn("Withdraw_DoesNotChangeBalance_WhenSuccessful", rendered)
         self.assertIn("balance -= amount", rendered)
 
+    def test_covers_object_identity_and_provenance_guidance(self):
+        lowered = self.raw.lower()
+
+        for token in (
+            "identity and provenance",
+            "owns the authoritative state",
+            "registered",
+        ):
+            self.assertIn(
+                token,
+                lowered,
+                f"expected semantic reviewer prompt to mention {token!r}"
+            )
+
+    def test_has_generic_identity_provenance_worked_example(self):
+        # Invalid: object constructed directly, never registered with
+        # its owning component.
+        self.assertIn("new Book(", self.raw)
+        self.assertIn("library.CheckOut(book.Id", self.raw)
+        self.assertIn("book.CheckedOutCount", self.raw)
+
+        # Valid: object created/retrieved through the owning component.
+        self.assertIn("library.AddBook(", self.raw)
+        self.assertIn("library.FindByCode(", self.raw)
+
+    def test_covers_root_cause_vs_surface_syntax_guidance(self):
+        lowered = self.raw.lower()
+
+        self.assertIn("root cause", lowered)
+        self.assertIn("surface", lowered)
+
 
 class StructuralReviewerPromptTests(unittest.TestCase):
     def setUp(self):
@@ -146,6 +179,52 @@ class StructuralReviewerPromptTests(unittest.TestCase):
         self.assertIn(WIDGET_TASK, rendered)
         self.assertIn("Register_RejectsWhenCodeAlreadyExists", rendered)
         self.assertIn("public bool Register(string code, int quantity)", rendered)
+
+    def test_covers_object_identity_and_provenance_guidance(self):
+        lowered = self.raw.lower()
+
+        for token in (
+            "identity and provenance",
+            "owns the authoritative state",
+            "registered",
+        ):
+            self.assertIn(
+                token,
+                lowered,
+                f"expected structural reviewer prompt to mention {token!r}"
+            )
+
+    def test_has_generic_identity_provenance_worked_example(self):
+        # Invalid: object constructed directly, never registered with
+        # its owning component.
+        self.assertIn("new Book(", self.raw)
+        self.assertIn("library.CheckOut(book.Id", self.raw)
+        self.assertIn("book.CheckedOutCount", self.raw)
+
+        # Valid: object created/retrieved through the owning component.
+        self.assertIn("library.AddBook(", self.raw)
+        self.assertIn("library.FindByCode(", self.raw)
+
+    def test_covers_root_cause_vs_surface_syntax_guidance(self):
+        lowered = self.raw.lower()
+
+        self.assertIn("root cause", lowered)
+        self.assertIn("surface", lowered)
+
+    def test_renders_against_generic_identity_provenance_fixture(self):
+        # The identity/provenance section itself must survive the
+        # real str.format() render pipeline together with fixture
+        # content, same as the other sections.
+        rendered = render_prompt(
+            "test-reviewer.md",
+            task=WIDGET_TASK,
+            production=WIDGET_PRODUCTION,
+            tests=WIDGET_BAD_SNIPPET_FRESH_INSTANCE_GUARD,
+            prior_issues="(none raised yet in this Test Contract run)"
+        )
+
+        self.assertIn("Object Identity And Provenance", rendered)
+        self.assertIn("new Book(", rendered)
 
 
 if __name__ == "__main__":

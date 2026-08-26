@@ -43,26 +43,90 @@ from tests.fixtures.toy_domains import (  # noqa: E402
 )
 
 
-def approve(thinking=None):
+def approve(thinking=None, done_reason="stop"):
     return {
         "ok": True,
         "response": json.dumps({"decision": "APPROVE", "issues": []}),
-        "thinking": thinking
+        "thinking": thinking,
+        "done_reason": done_reason,
+        "truncated": done_reason == "length"
     }
 
 
-def reject(issue, thinking=None):
+def reject(issue, thinking=None, done_reason="stop"):
     return {
         "ok": True,
         "response": json.dumps(
             {"decision": "REJECT", "issues": [issue]}
         ),
-        "thinking": thinking
+        "thinking": thinking,
+        "done_reason": done_reason,
+        "truncated": done_reason == "length"
+    }
+
+
+def truncated_response(partial_text, thinking=None):
+    """
+    Simulates what Ollama actually does on a length cutoff: the
+    json_mode grammar force-closes braces/quotes, so this can be
+    syntactically valid (parseable) JSON whose content is incomplete.
+    done_reason="length" is the only reliable signal that it happened.
+    """
+    return {
+        "ok": True,
+        "response": partial_text,
+        "thinking": thinking,
+        "done_reason": "length",
+        "truncated": True
     }
 
 
 def coder_returns(snippet):
-    return {"ok": True, "response": snippet, "thinking": None}
+    return {
+        "ok": True,
+        "response": snippet,
+        "thinking": None,
+        "done_reason": "stop",
+        "truncated": False
+    }
+
+
+def envelope_response(role, content, thinking=None, done_reason="stop"):
+    """
+    Simulates a complete, non-truncated response that is valid JSON
+    but the wrong top-level shape — the exact failure mode found by
+    the real-model smoke test: {"role": ..., "content": ...} instead
+    of {"decision": ..., "issues": [...]}.
+    """
+    return {
+        "ok": True,
+        "response": json.dumps({"role": role, "content": content}),
+        "thinking": thinking,
+        "done_reason": done_reason,
+        "truncated": done_reason == "length"
+    }
+
+
+def malformed_decision_value(value, thinking=None, done_reason="stop"):
+    return {
+        "ok": True,
+        "response": json.dumps({"decision": value, "issues": []}),
+        "thinking": thinking,
+        "done_reason": done_reason,
+        "truncated": done_reason == "length"
+    }
+
+
+def malformed_issues_type(thinking=None, done_reason="stop"):
+    return {
+        "ok": True,
+        "response": json.dumps(
+            {"decision": "REJECT", "issues": "not a list"}
+        ),
+        "thinking": thinking,
+        "done_reason": done_reason,
+        "truncated": done_reason == "length"
+    }
 
 
 class ScriptedCallModel:
@@ -87,14 +151,18 @@ class ScriptedCallModel:
         model,
         prompt,
         json_mode=False,
-        think=False
+        think=False,
+        num_ctx=None,
+        num_predict=None
     ):
         self.calls.append(
             {
                 "model": model,
                 "prompt": prompt,
                 "json_mode": json_mode,
-                "think": think
+                "think": think,
+                "num_ctx": num_ctx,
+                "num_predict": num_predict
             }
         )
 
@@ -663,6 +731,621 @@ class TestContractPhaseHarness(unittest.TestCase):
             second_attempt_semantic_prompt
         )
 
+    # -- Reviewer output integrity: truncated verdicts are never trusted -
+
+    def test_truncated_semantic_response_is_never_frozen_or_remembered(self):
+        # A truncated verdict must not: (a) be treated as APPROVE or
+        # REJECT, (b) add anything to rejection_memory, or (c) trigger
+        # a revision. Proven here by the follow-up clean APPROVE
+        # needing no confirmation call (rejection_memory stayed
+        # empty) and the coder model being called only once (no
+        # revision was ever triggered by the truncated attempt).
+        self._write("Ledger.cs", LEDGER_PRODUCTION)
+        self._write("LedgerTests.cs", LEDGER_ORIGINAL_TEST_FILE)
+
+        scripted = ScriptedCallModel(
+            {
+                "mock-coder-model":
+                    coder_returns(LEDGER_GOOD_SNIPPET),
+                "mock-structural-model":
+                    approve(thinking="setup looks fine"),
+                "mock-semantic-model": [
+                    truncated_response(
+                        '{"decision": "REJECT", "issues": '
+                        '[{"test": "Withdraw_ReducesBalance_'
+                        'WhenSuccessful", "issue": "Setup '
+                        'identity mismatch: the test '
+                        'instantiates Account directly (new '
+                        'Account("}',
+                        thinking=(
+                            "Setup identity mismatch: the test "
+                            "instantiates Account directly (new "
+                            "Account("
+                        )
+                    ),
+                    approve(thinking="looks fine on retry"),
+                ],
+            }
+        )
+
+        config = self._base_config(
+            max_test_generation_attempts=2
+        )
+
+        with mock.patch.object(
+            test_contract_phase,
+            "call_model",
+            scripted
+        ):
+            result = test_contract_phase.run_test_contract_phase(
+                config,
+                self.workspace,
+                LEDGER_TASK,
+                {},
+                [{"path": "Ledger.cs", "type": "implementation", "reason": "x"}],
+                [{"path": "LedgerTests.cs", "type": "test", "reason": "x"}]
+            )
+
+        # (a) not frozen on the truncated attempt, but the contract
+        # DOES eventually freeze once a real verdict comes in.
+        self.assertIsNotNone(result)
+
+        # (b) rejection_memory stayed empty: the follow-up clean
+        # APPROVE required no confirmation call, so only 2 semantic
+        # calls happened total (attempt 1 truncated, attempt 2
+        # approve) — a 3rd call would mean confirmation triggered,
+        # which only happens when rejection_memory is non-empty.
+        self.assertEqual(
+            len(scripted.calls_for("mock-semantic-model")), 2
+        )
+
+        # (c) no revision was triggered by the truncated attempt:
+        # only the initial generation call to the coder model.
+        self.assertEqual(
+            len(scripted.calls_for("mock-coder-model")), 1
+        )
+
+        events = self._history_events(config)
+        self.assertFalse(
+            any(e["event"] == "test_contract_rejected" for e in events)
+        )
+        self.assertTrue(
+            any(e["event"] == "test_contract_approved" for e in events)
+        )
+
+        # Both attempts logged thinking (truncated attempt 1, clean
+        # attempt 2) — the truncated one must be clearly tagged.
+        reasoning = [
+            e for e in events
+            if e["event"] == "test_review_reasoning"
+            and e["data"]["reviewer"] == "semantic"
+        ]
+        self.assertEqual(len(reasoning), 2)
+        self.assertEqual(
+            reasoning[0]["data"]["done_reason"], "length"
+        )
+        self.assertEqual(
+            reasoning[1]["data"]["done_reason"], "stop"
+        )
+
+    def test_truncated_confirmation_is_retried_not_trusted(self):
+        # Same guarantee, but for the confirmation call specifically:
+        # REJECT -> revised -> APPROVE -> confirmation TRUNCATED ->
+        # retried -> confirmation APPROVE -> freeze. The truncated
+        # confirmation must not itself trigger a revision.
+        self._write("Ledger.cs", LEDGER_PRODUCTION)
+        self._write("LedgerTests.cs", LEDGER_ORIGINAL_TEST_FILE)
+
+        scripted = ScriptedCallModel(
+            {
+                "mock-coder-model":
+                    coder_returns(LEDGER_GOOD_SNIPPET),
+                "mock-structural-model":
+                    approve(thinking="setup looks fine"),
+                "mock-semantic-model": [
+                    reject(
+                        "Withdraw_ReducesBalance_WhenSuccessful: "
+                        "setup identity mismatch.",
+                        thinking="first pass: caught the contradiction"
+                    ),
+                    approve(thinking="second pass: looks fine now"),
+                    truncated_response(
+                        '{"decision": "APPROVE", "issu',
+                        thinking="confirmation pass: cut off"
+                    ),
+                    approve(thinking="confirmation retry: agrees"),
+                ],
+            }
+        )
+
+        config = self._base_config(
+            max_test_generation_attempts=3
+        )
+
+        with mock.patch.object(
+            test_contract_phase,
+            "call_model",
+            scripted
+        ):
+            result = test_contract_phase.run_test_contract_phase(
+                config,
+                self.workspace,
+                LEDGER_TASK,
+                {},
+                [{"path": "Ledger.cs", "type": "implementation", "reason": "x"}],
+                [{"path": "LedgerTests.cs", "type": "test", "reason": "x"}]
+            )
+
+        self.assertIsNotNone(result)
+
+        # Only 2 coder calls: initial generation + the ONE revision
+        # after the genuine first REJECT. The truncated confirmation
+        # must not have triggered a second revision.
+        self.assertEqual(
+            len(scripted.calls_for("mock-coder-model")), 2
+        )
+
+        events = self._history_events(config)
+        confirmation_reasoning = [
+            e for e in events
+            if e["event"] == "test_review_reasoning"
+            and e["data"]["reviewer"] == "semantic_confirmation"
+        ]
+        # Two confirmation attempts logged: the truncated one and the
+        # successful retry.
+        self.assertEqual(len(confirmation_reasoning), 2)
+        self.assertEqual(
+            confirmation_reasoning[0]["data"]["done_reason"], "length"
+        )
+        self.assertEqual(
+            confirmation_reasoning[1]["data"]["done_reason"], "stop"
+        )
+
+        self.assertFalse(
+            any(e["event"] == "test_contract_rejected" for e in events)
+        )
+        self.assertTrue(
+            any(e["event"] == "test_contract_approved" for e in events)
+        )
+
+    def test_reviewer_calls_use_the_configured_output_budget(self):
+        # Part A requirement 1: structural and semantic reviewer
+        # calls must carry an explicit, configured num_ctx/num_predict
+        # rather than relying on Ollama's small server default.
+        self._write("Ledger.cs", LEDGER_PRODUCTION)
+        self._write("LedgerTests.cs", LEDGER_ORIGINAL_TEST_FILE)
+
+        scripted = ScriptedCallModel(
+            {
+                "mock-coder-model":
+                    coder_returns(LEDGER_GOOD_SNIPPET),
+                "mock-structural-model":
+                    approve(thinking="setup looks fine"),
+                "mock-semantic-model":
+                    approve(thinking="balance decreases as expected"),
+            }
+        )
+
+        config = self._base_config(
+            reviewer_context_size=12345,
+            reviewer_output_tokens=678
+        )
+
+        with mock.patch.object(
+            test_contract_phase,
+            "call_model",
+            scripted
+        ):
+            test_contract_phase.run_test_contract_phase(
+                config,
+                self.workspace,
+                LEDGER_TASK,
+                {},
+                [{"path": "Ledger.cs", "type": "implementation", "reason": "x"}],
+                [{"path": "LedgerTests.cs", "type": "test", "reason": "x"}]
+            )
+
+        for call in (
+            scripted.calls_for("mock-structural-model")
+            + scripted.calls_for("mock-semantic-model")
+        ):
+            self.assertEqual(call["num_ctx"], 12345)
+            self.assertEqual(call["num_predict"], 678)
+
+    # -- Reviewer response schema validation / repair --------------------
+    #
+    # Regression coverage for the real-model smoke-test finding: a
+    # complete, non-truncated response that is valid JSON but the wrong
+    # top-level shape (e.g. a chat-style {"role", "content"} envelope
+    # instead of {"decision", "issues"}).
+
+    def test_A_valid_schema_response_skips_repair(self):
+        self._write("Ledger.cs", LEDGER_PRODUCTION)
+        self._write("LedgerTests.cs", LEDGER_ORIGINAL_TEST_FILE)
+
+        scripted = ScriptedCallModel(
+            {
+                "mock-coder-model":
+                    coder_returns(LEDGER_GOOD_SNIPPET),
+                "mock-structural-model":
+                    approve(thinking="setup looks fine"),
+                "mock-semantic-model":
+                    approve(thinking="balance decreases as expected"),
+            }
+        )
+
+        config = self._base_config(max_test_generation_attempts=8)
+
+        with mock.patch.object(
+            test_contract_phase, "call_model", scripted
+        ):
+            result = test_contract_phase.run_test_contract_phase(
+                config, self.workspace, LEDGER_TASK, {},
+                [{"path": "Ledger.cs", "type": "implementation", "reason": "x"}],
+                [{"path": "LedgerTests.cs", "type": "test", "reason": "x"}]
+            )
+
+        self.assertIsNotNone(result)
+
+        # Exactly one call each — no repair call was ever made.
+        self.assertEqual(
+            len(scripted.calls_for("mock-structural-model")), 1
+        )
+        self.assertEqual(
+            len(scripted.calls_for("mock-semantic-model")), 1
+        )
+
+        events = self._history_events(config)
+        self.assertFalse(
+            any(e["event"] == "reviewer_schema_invalid" for e in events)
+        )
+        self.assertFalse(
+            any(e["event"] == "reviewer_schema_repair" for e in events)
+        )
+
+    def test_B_malformed_envelope_triggers_exactly_one_repair_call(self):
+        self._write("Ledger.cs", LEDGER_PRODUCTION)
+        self._write("LedgerTests.cs", LEDGER_ORIGINAL_TEST_FILE)
+
+        scripted = ScriptedCallModel(
+            {
+                "mock-coder-model":
+                    coder_returns(LEDGER_GOOD_SNIPPET),
+                "mock-structural-model":
+                    approve(thinking="setup looks fine"),
+                "mock-semantic-model": [
+                    envelope_response(
+                        "test_audit",
+                        "## Audit\n...\nDecision: REJECT\nIssues: "
+                        "[\"Balance should decrease\"]"
+                    ),
+                    reject(
+                        "Balance should decrease by amount on a "
+                        "successful Withdraw.",
+                        thinking="repair: re-emitted in schema"
+                    ),
+                ],
+            }
+        )
+
+        config = self._base_config(max_test_generation_attempts=1)
+
+        with mock.patch.object(
+            test_contract_phase, "call_model", scripted
+        ):
+            test_contract_phase.run_test_contract_phase(
+                config, self.workspace, LEDGER_TASK, {},
+                [{"path": "Ledger.cs", "type": "implementation", "reason": "x"}],
+                [{"path": "LedgerTests.cs", "type": "test", "reason": "x"}]
+            )
+
+        # Exactly 2 semantic calls: the original malformed one, and
+        # exactly one repair call. Never more than one repair.
+        self.assertEqual(
+            len(scripted.calls_for("mock-semantic-model")), 2
+        )
+
+        events = self._history_events(config)
+        invalid_events = [
+            e for e in events if e["event"] == "reviewer_schema_invalid"
+        ]
+        repair_events = [
+            e for e in events if e["event"] == "reviewer_schema_repair"
+        ]
+        self.assertEqual(len(invalid_events), 1)
+        self.assertEqual(invalid_events[0]["data"]["reviewer"], "semantic")
+        self.assertEqual(len(repair_events), 1)
+        self.assertEqual(repair_events[0]["data"]["outcome"], "ok")
+
+    def test_C_repair_recovers_reject_and_issues_flow_into_rejection_memory(self):
+        self._write("Ledger.cs", LEDGER_PRODUCTION)
+        self._write("LedgerTests.cs", LEDGER_ORIGINAL_TEST_FILE)
+
+        distinctive_issue = (
+            "DISTINCTIVE_REPAIRED_ISSUE: Balance should decrease "
+            "by amount on a successful Withdraw."
+        )
+
+        scripted = ScriptedCallModel(
+            {
+                "mock-coder-model":
+                    coder_returns(
+                        LEDGER_BAD_SNIPPET_QUANTITATIVE_CONTRADICTION
+                    ),
+                "mock-structural-model":
+                    approve(thinking="setup looks fine"),
+                "mock-semantic-model": [
+                    envelope_response(
+                        "test_audit",
+                        f"reasoning... Decision: REJECT. "
+                        f"Issue: {distinctive_issue}"
+                    ),
+                    reject(distinctive_issue),
+                    approve(thinking="clean on the revised attempt"),
+                ],
+            }
+        )
+
+        config = self._base_config(max_test_generation_attempts=2)
+
+        with mock.patch.object(
+            test_contract_phase, "call_model", scripted
+        ):
+            test_contract_phase.run_test_contract_phase(
+                config, self.workspace, LEDGER_TASK, {},
+                [{"path": "Ledger.cs", "type": "implementation", "reason": "x"}],
+                [{"path": "LedgerTests.cs", "type": "test", "reason": "x"}]
+            )
+
+        # The revision call made after the repaired REJECT must carry
+        # the repaired issue text — proving it reached
+        # rejection_memory / the revision prompt normally, exactly as
+        # a directly-well-formed REJECT would have.
+        revision_prompt = (
+            scripted.calls_for("mock-coder-model")[1]["prompt"]
+        )
+        self.assertIn(distinctive_issue, revision_prompt)
+
+        # And the second attempt's review prompts must carry it under
+        # Previously Raised Concerns, same as any other rejection.
+        second_attempt_structural_prompt = (
+            scripted.calls_for("mock-structural-model")[1]["prompt"]
+        )
+        self.assertIn(distinctive_issue, second_attempt_structural_prompt)
+
+    def test_D_repair_recovers_approve_and_normal_approval_continues(self):
+        self._write("Ledger.cs", LEDGER_PRODUCTION)
+        self._write("LedgerTests.cs", LEDGER_ORIGINAL_TEST_FILE)
+
+        scripted = ScriptedCallModel(
+            {
+                "mock-coder-model":
+                    coder_returns(LEDGER_GOOD_SNIPPET),
+                "mock-structural-model":
+                    approve(thinking="setup looks fine"),
+                "mock-semantic-model": [
+                    envelope_response(
+                        "test_audit",
+                        "reasoning... Decision: APPROVE. No issues."
+                    ),
+                    approve(thinking="repair: re-emitted in schema"),
+                ],
+            }
+        )
+
+        config = self._base_config(max_test_generation_attempts=1)
+
+        with mock.patch.object(
+            test_contract_phase, "call_model", scripted
+        ):
+            result = test_contract_phase.run_test_contract_phase(
+                config, self.workspace, LEDGER_TASK, {},
+                [{"path": "Ledger.cs", "type": "implementation", "reason": "x"}],
+                [{"path": "LedgerTests.cs", "type": "test", "reason": "x"}]
+            )
+
+        self.assertIsNotNone(result)
+        self.assertIn(
+            "Withdraw_ReducesBalance_WhenSuccessful",
+            result["frozen_tests"]["LedgerTests.cs"]
+        )
+
+        events = self._history_events(config)
+        self.assertTrue(
+            any(e["event"] == "test_contract_approved" for e in events)
+        )
+        # A clean first-time APPROVE via repair still needed no
+        # confirmation call: only 2 semantic calls total (original +
+        # repair), not 3.
+        self.assertEqual(
+            len(scripted.calls_for("mock-semantic-model")), 2
+        )
+
+    def test_E_repair_still_invalid_never_approves_and_stores_no_partial_issues(self):
+        self._write("Ledger.cs", LEDGER_PRODUCTION)
+        self._write("LedgerTests.cs", LEDGER_ORIGINAL_TEST_FILE)
+
+        scripted = ScriptedCallModel(
+            {
+                "mock-coder-model":
+                    coder_returns(LEDGER_GOOD_SNIPPET),
+                "mock-structural-model":
+                    approve(thinking="setup looks fine"),
+                "mock-semantic-model": [
+                    envelope_response(
+                        "test_audit", "first malformed answer"
+                    ),
+                    envelope_response(
+                        "test_audit", "repair also malformed"
+                    ),
+                    approve(thinking="clean on the next attempt"),
+                ],
+            }
+        )
+
+        config = self._base_config(max_test_generation_attempts=2)
+
+        with mock.patch.object(
+            test_contract_phase, "call_model", scripted
+        ):
+            result = test_contract_phase.run_test_contract_phase(
+                config, self.workspace, LEDGER_TASK, {},
+                [{"path": "Ledger.cs", "type": "implementation", "reason": "x"}],
+                [{"path": "LedgerTests.cs", "type": "test", "reason": "x"}]
+            )
+
+        # Eventually approved on attempt 2 (clean APPROVE) — proving
+        # the failed repair on attempt 1 didn't corrupt the run.
+        self.assertIsNotNone(result)
+
+        # Repair must NEVER be retried recursively: exactly 2 calls
+        # for the failed attempt (original + one repair attempt),
+        # plus 1 clean call on attempt 2 = 3 total.
+        self.assertEqual(
+            len(scripted.calls_for("mock-semantic-model")), 3
+        )
+
+        # No revision was triggered by the schema-invalid attempt —
+        # only the initial generation call to the coder model. A
+        # schema-invalid verdict must never be treated as a REJECT
+        # with issues to revise against.
+        self.assertEqual(
+            len(scripted.calls_for("mock-coder-model")), 1
+        )
+
+        repair_events = [
+            e for e in self._history_events(config)
+            if e["event"] == "reviewer_schema_repair"
+        ]
+        self.assertEqual(len(repair_events), 1)
+        self.assertNotEqual(repair_events[0]["data"]["outcome"], "ok")
+
+    def test_F_truncated_response_never_triggers_schema_repair(self):
+        self._write("Ledger.cs", LEDGER_PRODUCTION)
+        self._write("LedgerTests.cs", LEDGER_ORIGINAL_TEST_FILE)
+
+        scripted = ScriptedCallModel(
+            {
+                "mock-coder-model":
+                    coder_returns(LEDGER_GOOD_SNIPPET),
+                "mock-structural-model":
+                    approve(thinking="setup looks fine"),
+                "mock-semantic-model": [
+                    truncated_response(
+                        '{"decision": "REJECT", "issu',
+                        thinking="cut off mid-generation"
+                    ),
+                    approve(thinking="clean on retry"),
+                ],
+            }
+        )
+
+        config = self._base_config(max_test_generation_attempts=2)
+
+        with mock.patch.object(
+            test_contract_phase, "call_model", scripted
+        ):
+            test_contract_phase.run_test_contract_phase(
+                config, self.workspace, LEDGER_TASK, {},
+                [{"path": "Ledger.cs", "type": "implementation", "reason": "x"}],
+                [{"path": "LedgerTests.cs", "type": "test", "reason": "x"}]
+            )
+
+        # Only 2 semantic calls total (truncated attempt 1 + clean
+        # attempt 2) — a repair call would make this 3.
+        self.assertEqual(
+            len(scripted.calls_for("mock-semantic-model")), 2
+        )
+
+        events = self._history_events(config)
+        self.assertFalse(
+            any(e["event"] == "reviewer_schema_invalid" for e in events)
+        )
+        self.assertFalse(
+            any(e["event"] == "reviewer_schema_repair" for e in events)
+        )
+
+    def test_G_invalid_decision_value_and_non_list_issues_trigger_repair(self):
+        self._write("Ledger.cs", LEDGER_PRODUCTION)
+        self._write("LedgerTests.cs", LEDGER_ORIGINAL_TEST_FILE)
+
+        scripted = ScriptedCallModel(
+            {
+                "mock-coder-model":
+                    coder_returns(LEDGER_GOOD_SNIPPET),
+                "mock-structural-model":
+                    approve(thinking="setup looks fine"),
+                "mock-semantic-model": [
+                    malformed_issues_type(),
+                    reject(
+                        "Balance should decrease.",
+                        thinking="repair re-emitted correctly"
+                    ),
+                ],
+            }
+        )
+
+        config = self._base_config(max_test_generation_attempts=1)
+
+        with mock.patch.object(
+            test_contract_phase, "call_model", scripted
+        ):
+            test_contract_phase.run_test_contract_phase(
+                config, self.workspace, LEDGER_TASK, {},
+                [{"path": "Ledger.cs", "type": "implementation", "reason": "x"}],
+                [{"path": "LedgerTests.cs", "type": "test", "reason": "x"}]
+            )
+
+        events = self._history_events(config)
+        invalid_events = [
+            e for e in events if e["event"] == "reviewer_schema_invalid"
+        ]
+        self.assertEqual(len(invalid_events), 1)
+        self.assertIn("issues", invalid_events[0]["data"]["reason"])
+
+    def test_H_schema_repair_does_not_consume_attempt_slot(self):
+        self._write("Ledger.cs", LEDGER_PRODUCTION)
+        self._write("LedgerTests.cs", LEDGER_ORIGINAL_TEST_FILE)
+
+        scripted = ScriptedCallModel(
+            {
+                "mock-coder-model":
+                    coder_returns(LEDGER_GOOD_SNIPPET),
+                "mock-structural-model":
+                    approve(thinking="setup looks fine"),
+                "mock-semantic-model": [
+                    envelope_response(
+                        "test_audit", "reasoning... Decision: APPROVE."
+                    ),
+                    approve(thinking="repaired"),
+                ],
+            }
+        )
+
+        # Only 1 attempt allowed. If schema repair consumed its own
+        # attempt slot, this would exhaust max_test_generation_attempts
+        # before ever reaching a usable verdict and the contract would
+        # fail to freeze. Since repair happens INSIDE the same attempt,
+        # it succeeds within that single allowed attempt.
+        config = self._base_config(max_test_generation_attempts=1)
+
+        with mock.patch.object(
+            test_contract_phase, "call_model", scripted
+        ):
+            result = test_contract_phase.run_test_contract_phase(
+                config, self.workspace, LEDGER_TASK, {},
+                [{"path": "Ledger.cs", "type": "implementation", "reason": "x"}],
+                [{"path": "LedgerTests.cs", "type": "test", "reason": "x"}]
+            )
+
+        self.assertIsNotNone(result)
+        # Exactly one structural call proves only one "Test snippet
+        # attempt" iteration ran — the repair call did not need a
+        # second one.
+        self.assertEqual(
+            len(scripted.calls_for("mock-structural-model")), 1
+        )
+
 
 class NormalizeReviewerDecisionTests(unittest.TestCase):
     # Scenario E: decision=APPROVE with non-empty issues is
@@ -694,6 +1377,69 @@ class NormalizeReviewerDecisionTests(unittest.TestCase):
             {"issues": []}
         )
         self.assertNotEqual(decision, "APPROVE")
+
+
+class ValidateReviewerSchemaTests(unittest.TestCase):
+    # A syntactically valid JSON object is not automatically a valid
+    # reviewer verdict — pure-function coverage of the schema gate
+    # itself, independent of the repair machinery.
+
+    def test_well_formed_reject_is_valid(self):
+        self.assertIsNone(
+            test_contract_phase.validate_reviewer_schema(
+                {"decision": "REJECT", "issues": ["x"]}
+            )
+        )
+
+    def test_well_formed_approve_is_valid(self):
+        self.assertIsNone(
+            test_contract_phase.validate_reviewer_schema(
+                {"decision": "APPROVE", "issues": []}
+            )
+        )
+
+    def test_lowercase_decision_is_valid(self):
+        self.assertIsNone(
+            test_contract_phase.validate_reviewer_schema(
+                {"decision": "reject", "issues": []}
+            )
+        )
+
+    def test_chat_style_envelope_is_invalid(self):
+        reason = test_contract_phase.validate_reviewer_schema(
+            {"role": "test_audit", "content": "Decision: REJECT"}
+        )
+        self.assertIsNotNone(reason)
+
+    def test_missing_decision_is_invalid(self):
+        reason = test_contract_phase.validate_reviewer_schema(
+            {"issues": []}
+        )
+        self.assertIsNotNone(reason)
+
+    def test_invalid_decision_value_is_invalid(self):
+        reason = test_contract_phase.validate_reviewer_schema(
+            {"decision": "MAYBE", "issues": []}
+        )
+        self.assertIsNotNone(reason)
+
+    def test_issues_not_a_list_is_invalid(self):
+        reason = test_contract_phase.validate_reviewer_schema(
+            {"decision": "REJECT", "issues": "not a list"}
+        )
+        self.assertIsNotNone(reason)
+
+    def test_missing_issues_is_invalid(self):
+        reason = test_contract_phase.validate_reviewer_schema(
+            {"decision": "APPROVE"}
+        )
+        self.assertIsNotNone(reason)
+
+    def test_non_dict_top_level_is_invalid(self):
+        reason = test_contract_phase.validate_reviewer_schema(
+            ["decision", "REJECT"]
+        )
+        self.assertIsNotNone(reason)
 
 
 if __name__ == "__main__":

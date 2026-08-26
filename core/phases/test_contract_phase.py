@@ -70,6 +70,40 @@ def format_prior_issues(rejection_memory):
     return "\n".join(lines)
 
 
+VALID_DECISIONS = {"APPROVE", "REJECT"}
+
+
+def validate_reviewer_schema(parsed):
+    """
+    A syntactically valid JSON object is NOT automatically a valid
+    reviewer verdict. Confirm the top-level shape before trusting it:
+
+        {"decision": "APPROVE" | "REJECT", "issues": [...]}
+
+    Returns None when valid, or a short human-readable reason when
+    not (e.g. a model that wraps its answer in a chat-style envelope
+    such as {"role": "...", "content": "..."}).
+    """
+
+    if not isinstance(parsed, dict):
+        return "response is not a JSON object"
+
+    decision = parsed.get("decision")
+
+    if (
+        not isinstance(decision, str)
+        or decision.upper() not in VALID_DECISIONS
+    ):
+        return "missing or invalid 'decision' field"
+
+    issues = parsed.get("issues")
+
+    if not isinstance(issues, list):
+        return "missing or invalid 'issues' field (must be a list)"
+
+    return None
+
+
 def normalize_reviewer_decision(review_json):
     """
     A reviewer that returns APPROVE alongside a non-empty issues list
@@ -161,6 +195,211 @@ def semantic_test_review_prompt(
     )
 
 
+def schema_repair_prompt(malformed_response):
+    return render_prompt(
+        "test-review-schema-repair.md",
+        malformed_response=malformed_response
+    )
+
+
+def _resolve_reviewer_verdict(
+    config,
+    model,
+    prompt,
+    reviewer_label,
+    path,
+    attempt,
+    think,
+    num_ctx,
+    num_predict
+):
+    """
+    Run one reviewer call end to end: dispatch, thinking/termination
+    logging, truncation handling, and JSON schema validation with one
+    bounded format-repair attempt if the response is a complete but
+    schema-invalid JSON object (e.g. a chat-style envelope instead of
+    {"decision": ..., "issues": [...]}).
+
+    Returns a dict:
+
+        {"status": "call_failed"}                       transient
+        {"status": "truncated"}                          discard, retry
+        {"status": "invalid"}                             discard, retry
+        {"status": "ok", "decision": ..., "issues": [...]}
+
+    Every non-"ok" status must be treated identically by the caller:
+    do not approve, do not add to rejection_memory, retry safely.
+    Schema repair never re-reviews the contract and never counts as a
+    generation attempt or an independent reviewer vote — it is called
+    from within the SAME attempt this helper was invoked for.
+    """
+
+    review = call_model(
+        config,
+        model,
+        prompt,
+        json_mode=True,
+        think=think,
+        num_ctx=num_ctx,
+        num_predict=num_predict
+    )
+
+    if not review["ok"]:
+        return {"status": "call_failed"}
+
+    if review.get("thinking"):
+        append_history(
+            config,
+            "test_review_reasoning",
+            {
+                "file": path,
+                "attempt": attempt,
+                "reviewer": reviewer_label,
+                "thinking": review["thinking"],
+                "done_reason": review.get("done_reason")
+            }
+        )
+
+    if review.get("truncated"):
+        print(
+            "REVIEWER OUTPUT TRUNCATED "
+            f"(done_reason={review.get('done_reason')}): "
+            f"{reviewer_label} verdict is incomplete, "
+            "discarding and retrying."
+        )
+        return {"status": "truncated"}
+
+    try:
+        parsed = json.loads(review["response"])
+
+    except json.JSONDecodeError:
+        return {"status": "call_failed"}
+
+    schema_issue = validate_reviewer_schema(parsed)
+
+    if schema_issue is None:
+        print(
+            json.dumps(
+                parsed,
+                indent=2
+            )
+        )
+
+        decision, issues = normalize_reviewer_decision(parsed)
+
+        return {
+            "status": "ok",
+            "decision": decision,
+            "issues": issues
+        }
+
+    # Complete, non-truncated response, but the wrong shape (for
+    # example a chat-style {"role": ..., "content": ...} envelope
+    # instead of {"decision": ..., "issues": [...]}). Preserve it for
+    # observability, then attempt exactly one bounded format repair
+    # with the SAME model — never a re-review, never recursive.
+    print(
+        f"REVIEWER RESPONSE SCHEMA INVALID ({schema_issue}): "
+        f"{reviewer_label} verdict does not match the required "
+        "schema. Attempting one bounded format repair."
+    )
+
+    append_history(
+        config,
+        "reviewer_schema_invalid",
+        {
+            "file": path,
+            "attempt": attempt,
+            "reviewer": reviewer_label,
+            "raw_response": review["response"],
+            "reason": schema_issue,
+            "done_reason": review.get("done_reason")
+        }
+    )
+
+    repair = call_model(
+        config,
+        model,
+        schema_repair_prompt(review["response"]),
+        json_mode=True,
+        think=False,
+        num_ctx=num_ctx,
+        num_predict=num_predict
+    )
+
+    repair_outcome = "call_failed"
+    repaired_decision = None
+    repaired_issues = None
+
+    if not repair["ok"]:
+        repair_outcome = "call_failed"
+
+    elif repair.get("truncated"):
+        repair_outcome = "truncated"
+
+    else:
+        try:
+            repaired = json.loads(repair["response"])
+            repair_schema_issue = validate_reviewer_schema(repaired)
+
+        except json.JSONDecodeError:
+            repair_schema_issue = "response is not valid JSON"
+            repaired = None
+
+        if repair_schema_issue is None:
+            repair_outcome = "ok"
+
+            repaired_decision, repaired_issues = (
+                normalize_reviewer_decision(repaired)
+            )
+
+        else:
+            repair_outcome = f"still_invalid: {repair_schema_issue}"
+
+    append_history(
+        config,
+        "reviewer_schema_repair",
+        {
+            "file": path,
+            "attempt": attempt,
+            "reviewer": reviewer_label,
+            "repair_response": repair.get("response"),
+            "outcome": repair_outcome,
+            "done_reason": repair.get("done_reason")
+        }
+    )
+
+    if repair_outcome == "ok":
+        print(
+            "SCHEMA REPAIR SUCCEEDED for "
+            f"{reviewer_label} reviewer: recovered "
+            f"decision={repaired_decision!r}."
+        )
+        print(
+            json.dumps(
+                {
+                    "decision": repaired_decision,
+                    "issues": repaired_issues
+                },
+                indent=2
+            )
+        )
+
+        return {
+            "status": "ok",
+            "decision": repaired_decision,
+            "issues": repaired_issues
+        }
+
+    print(
+        f"SCHEMA REPAIR FAILED for {reviewer_label} reviewer "
+        f"({repair_outcome}): discarding original verdict, "
+        "retrying."
+    )
+
+    return {"status": "invalid"}
+
+
 def run_test_contract_phase(
     config,
     workspace,
@@ -201,6 +440,21 @@ def run_test_contract_phase(
     test_snapshot = snapshot_files(
         workspace,
         test_paths
+    )
+
+    # Reviewer prompts (production + full merged test file + prior
+    # issues) can exceed Ollama's small default context window,
+    # silently truncating the verdict mid-generation. Give reviewer
+    # calls specifically an explicit, bounded budget rather than
+    # relying on the server default.
+    reviewer_num_ctx = config.get(
+        "reviewer_context_size",
+        16384
+    )
+
+    reviewer_num_predict = config.get(
+        "reviewer_output_tokens",
+        2048
     )
 
     frozen_tests = {}
@@ -316,66 +570,31 @@ def run_test_contract_phase(
                 )
                 continue
 
-            review = call_model(
+            structural_outcome = _resolve_reviewer_verdict(
                 config,
-                config[
-                    "test_reviewer_model"
-                ],
+                config["test_reviewer_model"],
                 test_review_prompt(
                     task,
                     implementation_context,
                     merged,
                     prior_issues=rejection_memory
                 ),
-                json_mode=True,
-                think=config.get(
+                "structural",
+                path,
+                attempt,
+                config.get(
                     "test_reviewer_thinking",
                     False
-                )
+                ),
+                reviewer_num_ctx,
+                reviewer_num_predict
             )
 
-            if not review[
-                "ok"
-            ]:
+            if structural_outcome["status"] != "ok":
                 continue
 
-            if review.get(
-                "thinking"
-            ):
-                append_history(
-                    config,
-                    "test_review_reasoning",
-                    {
-                        "file": path,
-                        "attempt": attempt,
-                        "reviewer": "structural",
-                        "thinking":
-                            review["thinking"]
-                    }
-                )
-
-            try:
-                review_json = json.loads(
-                    review[
-                        "response"
-                    ]
-                )
-
-            except json.JSONDecodeError:
-                continue
-
-            print(
-                json.dumps(
-                    review_json,
-                    indent=2
-                )
-            )
-
-            structural_decision, structural_issues = (
-                normalize_reviewer_decision(
-                    review_json
-                )
-            )
+            structural_decision = structural_outcome["decision"]
+            structural_issues = structural_outcome["issues"]
 
             if structural_decision != "APPROVE":
                 rejection_memory.append(
@@ -400,7 +619,12 @@ def run_test_contract_phase(
                 )
             )
 
-            semantic_review = call_model(
+            print()
+            print(
+                "Semantic contract audit:"
+            )
+
+            semantic_outcome = _resolve_reviewer_verdict(
                 config,
                 semantic_model,
                 semantic_test_review_prompt(
@@ -409,57 +633,22 @@ def run_test_contract_phase(
                     merged,
                     prior_issues=rejection_memory
                 ),
-                json_mode=True,
-                think=config.get(
+                "semantic",
+                path,
+                attempt,
+                config.get(
                     "semantic_reviewer_thinking",
                     False
-                )
+                ),
+                reviewer_num_ctx,
+                reviewer_num_predict
             )
 
-            if not semantic_review["ok"]:
+            if semantic_outcome["status"] != "ok":
                 continue
 
-            if semantic_review.get(
-                "thinking"
-            ):
-                append_history(
-                    config,
-                    "test_review_reasoning",
-                    {
-                        "file": path,
-                        "attempt": attempt,
-                        "reviewer": "semantic",
-                        "thinking":
-                            semantic_review["thinking"]
-                    }
-                )
-
-            try:
-                semantic_json = json.loads(
-                    semantic_review[
-                        "response"
-                    ]
-                )
-
-            except json.JSONDecodeError:
-                continue
-
-            print()
-            print(
-                "Semantic contract audit:"
-            )
-            print(
-                json.dumps(
-                    semantic_json,
-                    indent=2
-                )
-            )
-
-            semantic_decision, semantic_issues = (
-                normalize_reviewer_decision(
-                    semantic_json
-                )
-            )
+            semantic_decision = semantic_outcome["decision"]
+            semantic_issues = semantic_outcome["issues"]
 
             if semantic_decision != "APPROVE":
                 rejection_memory.append(
@@ -487,7 +676,12 @@ def run_test_contract_phase(
             # the SAME current contract before freezing it. This does
             # NOT consume its own attempt slot; it is validation of
             # the current attempt, not a new generation attempt.
-            confirmation = call_model(
+            print()
+            print(
+                "Semantic confirmation audit:"
+            )
+
+            confirmation_outcome = _resolve_reviewer_verdict(
                 config,
                 semantic_model,
                 semantic_test_review_prompt(
@@ -496,57 +690,22 @@ def run_test_contract_phase(
                     merged,
                     prior_issues=rejection_memory
                 ),
-                json_mode=True,
-                think=config.get(
+                "semantic_confirmation",
+                path,
+                attempt,
+                config.get(
                     "semantic_reviewer_thinking",
                     False
-                )
+                ),
+                reviewer_num_ctx,
+                reviewer_num_predict
             )
 
-            if not confirmation["ok"]:
+            if confirmation_outcome["status"] != "ok":
                 continue
 
-            if confirmation.get(
-                "thinking"
-            ):
-                append_history(
-                    config,
-                    "test_review_reasoning",
-                    {
-                        "file": path,
-                        "attempt": attempt,
-                        "reviewer": "semantic_confirmation",
-                        "thinking":
-                            confirmation["thinking"]
-                    }
-                )
-
-            try:
-                confirmation_json = json.loads(
-                    confirmation[
-                        "response"
-                    ]
-                )
-
-            except json.JSONDecodeError:
-                continue
-
-            print()
-            print(
-                "Semantic confirmation audit:"
-            )
-            print(
-                json.dumps(
-                    confirmation_json,
-                    indent=2
-                )
-            )
-
-            confirmation_decision, confirmation_issues = (
-                normalize_reviewer_decision(
-                    confirmation_json
-                )
-            )
+            confirmation_decision = confirmation_outcome["decision"]
+            confirmation_issues = confirmation_outcome["issues"]
 
             if confirmation_decision == "APPROVE":
                 approved = True

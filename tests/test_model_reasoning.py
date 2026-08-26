@@ -145,5 +145,143 @@ class OllamaThinkingPreservationTests(unittest.TestCase):
         self.assertEqual(result["thinking"], payload["thinking"])
 
 
+class OllamaTruncationDetectionTests(unittest.TestCase):
+    """
+    Regression coverage for Part A: Ollama reliably reports done_reason
+    on its non-streaming /api/generate response ("stop" for a natural
+    completion, "length" when generation was cut off by the output/
+    context budget). json_mode's grammar-constrained decoder can
+    force-close a cut-off generation into syntactically valid JSON, so
+    done_reason is the only trustworthy signal — never response shape.
+    """
+
+    def test_normal_completion_is_not_marked_truncated(self):
+        payload = {
+            "response": '{"decision": "APPROVE", "issues": []}',
+            "done_reason": "stop"
+        }
+
+        with mock.patch.object(
+            models.urllib.request,
+            "urlopen",
+            return_value=FakeHttpResponse(payload)
+        ):
+            result = models.ollama(
+                "some-model",
+                "prompt text",
+                timeout=5,
+                json_mode=True
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["done_reason"], "stop")
+        self.assertFalse(result["truncated"])
+
+    def test_length_termination_is_marked_truncated(self):
+        # Mirrors what was actually observed: a syntactically valid
+        # but semantically incomplete JSON string, cut off mid-value,
+        # with done_reason="length".
+        payload = {
+            "response": (
+                '{"decision": "REJECT", "issues": [{"test": "X", '
+                '"issue": "Setup identity mismatch: the test '
+                'instantiates Widget directly (new Widget("}'
+            ),
+            "done_reason": "length"
+        }
+
+        with mock.patch.object(
+            models.urllib.request,
+            "urlopen",
+            return_value=FakeHttpResponse(payload)
+        ):
+            result = models.ollama(
+                "some-model",
+                "prompt text",
+                timeout=5,
+                json_mode=True
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["done_reason"], "length")
+        self.assertTrue(result["truncated"])
+
+    def test_missing_done_reason_is_not_treated_as_truncated(self):
+        # Graceful degradation: if a future/older Ollama build omits
+        # done_reason, do not fabricate a truncation signal from
+        # response text shape.
+        payload = {"response": '{"decision": "APPROVE", "issues": []}'}
+
+        with mock.patch.object(
+            models.urllib.request,
+            "urlopen",
+            return_value=FakeHttpResponse(payload)
+        ):
+            result = models.ollama(
+                "some-model",
+                "prompt text",
+                timeout=5,
+                json_mode=True
+            )
+
+        self.assertIsNone(result["done_reason"])
+        self.assertFalse(result["truncated"])
+
+    def test_num_ctx_and_num_predict_are_forwarded_when_given(self):
+        captured = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured["body"] = json.loads(
+                request.data.decode()
+            )
+            return FakeHttpResponse(
+                {"response": "{}", "done_reason": "stop"}
+            )
+
+        with mock.patch.object(
+            models.urllib.request,
+            "urlopen",
+            side_effect=fake_urlopen
+        ):
+            models.ollama(
+                "some-model",
+                "prompt text",
+                timeout=5,
+                num_ctx=16384,
+                num_predict=2048
+            )
+
+        self.assertEqual(
+            captured["body"]["options"],
+            {"num_ctx": 16384, "num_predict": 2048}
+        )
+
+    def test_no_options_key_sent_when_budgets_not_specified(self):
+        # Preserves existing behavior for callers that don't opt in
+        # (e.g. the coder model calls, out of scope for this change).
+        captured = {}
+
+        def fake_urlopen(request, timeout=None):
+            captured["body"] = json.loads(
+                request.data.decode()
+            )
+            return FakeHttpResponse(
+                {"response": "{}", "done_reason": "stop"}
+            )
+
+        with mock.patch.object(
+            models.urllib.request,
+            "urlopen",
+            side_effect=fake_urlopen
+        ):
+            models.ollama(
+                "some-model",
+                "prompt text",
+                timeout=5
+            )
+
+        self.assertNotIn("options", captured["body"])
+
+
 if __name__ == "__main__":
     unittest.main()

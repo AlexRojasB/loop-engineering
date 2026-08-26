@@ -5,6 +5,8 @@
   "reviewer_model": "qwen3:4b-instruct-2507-q4_K_M",
   "test_reviewer_model": "qwen3:4b-instruct-2507-q4_K_M",
   "test_reviewer_thinking": true,
+  "reviewer_context_size": 16384,
+  "reviewer_output_tokens": 2048,
   "state_file": "runtime/state.json",
   "history_file": "runtime/history.jsonl",
   "model_timeout_seconds": 420,

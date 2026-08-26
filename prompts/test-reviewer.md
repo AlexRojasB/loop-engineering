@@ -34,6 +34,11 @@ Do not reject solely because a concern was raised before. Reject only if,
 on your own reading of the CURRENT test file, that concern (or an
 equivalent defect) is actually still there.
 
+A surface syntax change alone does not resolve a previously raised
+concern — for example, renaming which object a method is called on.
+Verify that the underlying condition the concern described no longer
+holds, not just that the code no longer reads the same way.
+
 # Critical TDD Context
 
 The requested feature has NOT been implemented yet.
@@ -199,3 +204,66 @@ When reviewing a stateful test, reason through:
 Arrange -> entity identity -> prerequisite transition -> action -> assertion.
 
 If any link in that chain is invalid against the existing production behavior, return REJECT and explain the setup defect.
+
+## Object Identity And Provenance
+
+For any test that asserts mutated state on an object X after an action
+performed through another component S (a service, repository, manager,
+or similar), trace all of the following before approving:
+
+1. Which concrete object does the assertion actually read?
+2. How was that object constructed — directly via its own constructor,
+   or returned/retrieved from S's own public API?
+3. Which component owns the authoritative state for objects of that
+   type (does S maintain its own internal collection of them)?
+4. What is S's public path for such an object to become known to it?
+5. When the tested action runs on S, which concrete instance can it
+   actually reach (for example, what it looks up by id or key)?
+6. Is the instance S can reach the SAME instance the assertion reads?
+
+Direct construction of a domain object is NOT automatically invalid —
+plenty of legitimate tests construct value objects, DTOs, or standalone
+entities directly. Reject ONLY when the production code itself shows
+that the component performing the tested action cannot reach the
+object the assertion depends on — for example, because that component
+holds its own private collection, populates it only through a specific
+creation method, and the object under test never went through that
+method.
+
+Example invalid setup (object constructed outside its owning component):
+
+    var book = new Book("Book-1", 3);
+    var library = new Library();
+    library.CheckOut(book.Id, 1);
+    Assert.Equal(1, book.CheckedOutCount);
+
+`book` was constructed directly and never passed through
+`Library.AddBook(...)` or any other registration entry point. If
+`Library` maintains its own private collection and `CheckOut` looks
+the id up in THAT collection, it cannot reach the caller's local
+`book` object — regardless of whether `CheckOut` returns true or
+false. Asserting `book.CheckedOutCount` changed is invalid. REJECT.
+
+Example valid setup:
+
+    var library = new Library();
+    library.AddBook("Book-1", 3);
+    var book = library.FindByCode("Book-1");
+    library.CheckOut(book.Id, 1);
+    var updated = library.FindByCode("Book-1");
+    Assert.Equal(1, updated.CheckedOutCount);
+
+When a prior review already raised an identity/provenance concern for
+a test, verify that the ROOT CAUSE is resolved — not merely that a
+surface call target changed. For example, changing
+
+    book.CheckOut(...)
+
+to
+
+    library.CheckOut(book.Id, ...)
+
+does NOT resolve the concern if `library` still has no path to reach
+`book`. The object must actually be registered with the owning
+component; renaming which receiver a method is called on does not by
+itself achieve that.

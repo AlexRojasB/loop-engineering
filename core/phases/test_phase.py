@@ -8,6 +8,7 @@ from core.repository import (
     snapshot_files,
     write_file,
 )
+from core.spec_memory import record_spec_failure
 from core.state import save_state
 from core.utils import (
     compact,
@@ -198,6 +199,20 @@ def run_test_phase(
             ] = (
                 "Frozen test contract caused "
                 "validation failure."
+            )
+
+            record_spec_failure(
+                config,
+                "frozen_contract",
+                "A previous frozen contract could not "
+                "compile against production: "
+                + ", ".join(
+                    routing["ownership"].get(
+                        "paths",
+                        []
+                    )
+                )
+                + ". The contract itself was the defect."
             )
 
             save_state(
@@ -407,6 +422,15 @@ def run_test_phase(
             )
 
     if tests["exit_code"] != 0:
+        record_spec_failure(
+            config,
+            "tests",
+            "A previous attempt's production repair never "
+            "satisfied the frozen contract. Verify the "
+            "contract is satisfiable by the requested change "
+            "alone before freezing it again."
+        )
+
         return False
 
     counts = parse_test_counts(

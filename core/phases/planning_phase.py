@@ -80,7 +80,8 @@ def run_planning_phase(
     workspace,
     task,
     state,
-    project_context
+    project_context,
+    isolation=None
 ):
     print()
     print("=" * 60)
@@ -94,7 +95,8 @@ def run_planning_phase(
     )
 
     files = discover_files(
-        workspace
+        workspace,
+        isolation=isolation
     )
 
     planner_result = call_model(

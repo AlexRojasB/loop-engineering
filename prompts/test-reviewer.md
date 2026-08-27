@@ -14,6 +14,17 @@ You are reviewing a FUTURE TEST CONTRACT in a strict test-first / TDD workflow.
 
 {tests}
 
+# Findings From Previous Attempts At This Same Work Item
+
+{prior_spec_failures}
+
+These findings come from EARLIER outer attempts at this same work item.
+The repository has been restored since, so none of them describe the
+current files. Treat them as known traps to avoid repeating, not as
+defects that are still present. Do not reject or rewrite anything solely
+because a finding is listed here — verify independently against the
+material above.
+
 # Previously Raised Concerns In This Test Contract Run
 
 {prior_issues}

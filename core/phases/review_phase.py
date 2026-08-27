@@ -3,6 +3,7 @@ import json
 from core.models import call_model
 from core.prompts import render_prompt
 from core.repository import git_diff
+from core.spec_memory import record_spec_failure
 from core.state import (
     append_history,
     save_state,
@@ -95,6 +96,16 @@ def run_review_phase(
             config,
             state
         )
+
+        for issue in review.get(
+            "issues",
+            []
+        )[:4]:
+            record_spec_failure(
+                config,
+                "final_review",
+                issue
+            )
 
         return False
 

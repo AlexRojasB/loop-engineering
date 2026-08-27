@@ -7,7 +7,9 @@ It combines deterministic workflow controls with an agentic implementation loop 
 ## What it does
 
 - Resolves an authoritative specification
+- Isolates the current work item from later queued work
 - Generates and reviews tests
+- Validates the candidate contract deterministically before freezing it
 - Freezes a test contract before implementation
 - Confirms an expected RED state
 - Runs an agentic implementation loop
@@ -19,8 +21,9 @@ It combines deterministic workflow controls with an agentic implementation loop 
 ## Architecture
 
 Specification
+-> Work Isolation
 -> Planning
--> Test Contract
+-> Test Contract (deterministic validation + review)
 -> Expected RED
 -> Agentic Implementation
 -> Deterministic Build
@@ -75,14 +78,59 @@ To save output:
 
     python -u ~/loop-engineering/agent.py . --spec specs/queue/example.md | tee ~/loop-engineering/run-example.txt
 
+## Work isolation
+
+During a queued run, only the CURRENT work item is authoritative.
+
+Later queued items are excluded from planner, test-generation, reviewer
+and implementation context, and are neither listed nor readable through
+the agentic file tools. Production and test sources are never restricted:
+behaviour delivered by earlier work stays available through committed
+repository state.
+
+A work item may re-admit a specific document explicitly:
+
+    ## Depends On
+
+    - docs/architecture.md
+
+## Contract validation
+
+Before an expensive semantic review, the harness compiles the candidate
+test contract and asks the language adapter to classify the resulting
+diagnostics. That separates:
+
+- the requested future API not existing yet (legitimate expected RED)
+- proof that the contract itself is wrong (an existing API misused, an
+  API the current specification never requested, or invalid syntax)
+
+The second category is rejected before freezing. Classification lives
+behind the adapter (`classify_contract_diagnostics`), so other languages
+can supply their own without changing the pipeline. When an adapter
+cannot classify, the contract proceeds to the existing reviewers exactly
+as before — the check only ever short-circuits on positive evidence.
+
+## Cross-attempt failure memory
+
+Repository state is restored between failed outer attempts at a work
+item. A bounded, condensed record of *why* previous attempts failed
+survives that restore and is fed back into test generation, revision and
+review, so the same defect is not rediscovered from scratch.
+
+The memory is scoped to one work item (keyed by path and content hash),
+capped in both entry count and entry length, cleared when the item
+finishes, and stored outside the target repository so rollback, clean
+baseline checks and automatic commits are unaffected.
+
 ## Safety model
 
 The agentic phase is intentionally constrained:
 
 - Specifications cannot be modified
+- Later queued work items cannot be listed or read
 - Frozen tests cannot be modified
 - Writes are restricted to planner-authorized production files
-- Commands are allow-listed
+- Commands are structured operations, never arbitrary shell
 - Build and tests are independently re-run by the harness
 - Repository state is checked before execution
 

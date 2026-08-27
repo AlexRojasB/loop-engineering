@@ -54,7 +54,39 @@ def write_file(
     path.write_text(content)
 
 
-def discover_files(workspace):
+def run_argv(workspace, argv, timeout=300):
+    """
+    Run a structured argv list without a shell.
+
+    Used wherever the harness itself invokes build/test tooling. Unlike
+    run_command() this never interprets shell syntax, so it is safe for
+    commands assembled from adapter output.
+    """
+
+    process = subprocess.run(
+        argv,
+        cwd=workspace,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=timeout
+    )
+
+    return {
+        "exit_code": process.returncode,
+        "output": process.stdout or ""
+    }
+
+
+def discover_files(workspace, isolation=None):
+    """
+    List repository files.
+
+    When a work isolation boundary is supplied, sources restricted for the
+    current work item are omitted entirely, so they can never reach a
+    planner prompt or a path-repair lookup.
+    """
+
     files = []
 
     for root, dirs, names in os.walk(
@@ -74,12 +106,22 @@ def discover_files(workspace):
 
             path = Path(root) / name
 
-            files.append(
-                str(
-                    path.relative_to(
-                        workspace
-                    )
+            relative = str(
+                path.relative_to(
+                    workspace
                 )
+            )
+
+            if (
+                isolation is not None
+                and isolation.is_restricted(
+                    relative
+                )
+            ):
+                continue
+
+            files.append(
+                relative
             )
 
     return sorted(files)

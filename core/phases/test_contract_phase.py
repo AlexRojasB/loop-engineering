@@ -1,6 +1,12 @@
+import hashlib
 import json
+import re
 
 from core.context import implementation_text
+from core.contract_validation import (
+    adapter_supports_validation,
+    validate_candidate_contract,
+)
 from core.guards import (
     extract_test_method_names,
     validate_test_snippet,
@@ -13,6 +19,11 @@ from core.repository import (
     snapshot_files,
     write_file,
 )
+from core.spec_memory import (
+    NO_MEMORY_TEXT as NO_SPEC_MEMORY,
+    record_spec_failure,
+    spec_memory_text,
+)
 from core.state import (
     append_history,
     mark_phase_completed,
@@ -23,10 +34,46 @@ from core.test_merge import merge_test_snippet
 from core.utils import extract_code
 
 
+COMMENT_PATTERN = re.compile(
+    r"//[^\n]*|/\*.*?\*/",
+    re.DOTALL
+)
+
+WHITESPACE_PATTERN = re.compile(r"\s+")
+
+
+def snippet_fingerprint(snippet):
+    """
+    Identity of a candidate contract, ignoring comments and formatting.
+
+    Two revisions that differ only cosmetically are the same contract, and
+    re-running two model reviewers over a contract already rejected in
+    this run buys nothing but latency.
+    """
+
+    stripped = COMMENT_PATTERN.sub(
+        " ",
+        snippet or ""
+    )
+
+    normalized = WHITESPACE_PATTERN.sub(
+        " ",
+        stripped
+    ).strip()
+
+    return hashlib.sha256(
+        normalized.encode(
+            "utf-8",
+            "replace"
+        )
+    ).hexdigest()
+
+
 def test_snippet_prompt(
     task,
     implementation_files,
-    current_test_content
+    current_test_content,
+    prior_spec_failures=None
 ):
     return render_prompt(
         "test-generator.md",
@@ -34,7 +81,10 @@ def test_snippet_prompt(
         production=implementation_text(
             implementation_files
         ),
-        existing_tests=current_test_content
+        existing_tests=current_test_content,
+        prior_spec_failures=
+            prior_spec_failures
+            or NO_SPEC_MEMORY
     )
 
 
@@ -137,7 +187,8 @@ def test_snippet_revision_prompt(
     original_test_content,
     snippet,
     issues,
-    prior_issues=None
+    prior_issues=None,
+    prior_spec_failures=None
 ):
     return render_prompt(
         "test-revision.md",
@@ -153,7 +204,10 @@ def test_snippet_revision_prompt(
         ),
         prior_issues=format_prior_issues(
             prior_issues
-        )
+        ),
+        prior_spec_failures=
+            prior_spec_failures
+            or NO_SPEC_MEMORY
     )
 
 
@@ -161,7 +215,8 @@ def test_review_prompt(
     task,
     implementation_files,
     merged_test_content,
-    prior_issues=None
+    prior_issues=None,
+    prior_spec_failures=None
 ):
     return render_prompt(
         "test-reviewer.md",
@@ -172,7 +227,10 @@ def test_review_prompt(
         tests=merged_test_content,
         prior_issues=format_prior_issues(
             prior_issues
-        )
+        ),
+        prior_spec_failures=
+            prior_spec_failures
+            or NO_SPEC_MEMORY
     )
 
 
@@ -180,7 +238,8 @@ def semantic_test_review_prompt(
     task,
     implementation_files,
     merged_test_content,
-    prior_issues=None
+    prior_issues=None,
+    prior_spec_failures=None
 ):
     return render_prompt(
         "test-semantic-reviewer.md",
@@ -191,7 +250,10 @@ def semantic_test_review_prompt(
         tests=merged_test_content,
         prior_issues=format_prior_issues(
             prior_issues
-        )
+        ),
+        prior_spec_failures=
+            prior_spec_failures
+            or NO_SPEC_MEMORY
     )
 
 
@@ -400,13 +462,111 @@ def _resolve_reviewer_verdict(
     return {"status": "invalid"}
 
 
+def deterministic_contract_gate(
+    config,
+    workspace,
+    path,
+    merged,
+    task,
+    adapter,
+    repository_files,
+    attempt,
+    runner=None
+):
+    """
+    Cheap, deterministic pre-freeze check.
+
+    Writes the candidate contract, compiles it, and asks the language
+    adapter whether the resulting diagnostics prove the contract itself is
+    wrong (an existing API misused, an API the current spec never asked
+    for, or code that is not even syntactically valid) as opposed to the
+    requested future feature simply not existing yet.
+
+    Returns (ok, issues). ok=False means reject deterministically, without
+    spending a structural or semantic reviewer call on it.
+
+    Fails OPEN: when the adapter cannot classify, or the toolchain is
+    unavailable, the contract proceeds to the existing reviewers exactly
+    as before. This adds a check; it never removes one.
+    """
+
+    if not config.get(
+        "contract_compilation_check",
+        True
+    ):
+        return True, []
+
+    if not adapter_supports_validation(
+        adapter
+    ):
+        return True, []
+
+    write_file(
+        workspace,
+        path,
+        merged
+    )
+
+    result = validate_candidate_contract(
+        workspace,
+        adapter,
+        repository_files,
+        task,
+        runner=runner
+    )
+
+    if not result.get("supported"):
+        return True, []
+
+    append_history(
+        config,
+        "contract_compilation_checked",
+        {
+            "file": path,
+            "attempt": attempt,
+            "verdict": result["verdict"],
+            "issues": result["issues"]
+        }
+    )
+
+    if result["verdict"] != "INVALID":
+        report = result.get("report") or {}
+
+        if report.get("expected_red"):
+            print(
+                "CONTRACT COMPILATION CHECK: "
+                "expected-red diagnostics only "
+                f"({len(report['expected_red'])} "
+                "requested symbol(s) missing)."
+            )
+
+        return True, []
+
+    issues = result["issues"] or [
+        "The generated test contract does not compile "
+        "for a reason unrelated to the requested feature."
+    ]
+
+    print()
+    print(
+        "CONTRACT COMPILATION CHECK: REJECT"
+    )
+
+    for issue in issues:
+        print(f"- {issue}")
+
+    return False, issues
+
+
 def run_test_contract_phase(
     config,
     workspace,
     task,
     state,
     implementation_changes,
-    test_changes
+    test_changes,
+    adapter=None,
+    repository_files=None
 ):
     print()
     print("=" * 60)
@@ -457,6 +617,22 @@ def run_test_contract_phase(
         2048
     )
 
+    prior_spec_failures = spec_memory_text(
+        config
+    )
+
+    if prior_spec_failures != NO_SPEC_MEMORY:
+        print()
+        print(
+            "FINDINGS FROM PREVIOUS ATTEMPTS "
+            "AT THIS WORK ITEM:"
+        )
+        print(prior_spec_failures)
+
+    contract_runner = config.get(
+        "contract_build_runner"
+    )
+
     frozen_tests = {}
 
     for test_change in test_changes:
@@ -476,7 +652,9 @@ def run_test_contract_phase(
             test_snippet_prompt(
                 task,
                 implementation_context,
-                original
+                original,
+                prior_spec_failures=
+                    prior_spec_failures
             )
         )
 
@@ -501,6 +679,16 @@ def run_test_contract_phase(
         # THIS run_test_contract_phase call. Not persisted beyond it.
         rejection_memory = []
 
+        # Fingerprints of contracts the DETERMINISTIC compilation gate
+        # already rejected in this run. Recompiling and re-reviewing an
+        # identical contract cannot produce a different compiler verdict,
+        # so a repeat is skipped straight to revision.
+        #
+        # Deliberately not populated from reviewer verdicts: those are
+        # stochastic, and re-reviewing the same contract with accumulated
+        # prior issues is load-bearing convergence behaviour.
+        rejected_fingerprints = set()
+
         def revise(issues_for_this_revision):
             revision = call_model(
                 config,
@@ -513,7 +701,9 @@ def run_test_contract_phase(
                     original,
                     snippet,
                     issues_for_this_revision,
-                    prior_issues=rejection_memory
+                    prior_issues=rejection_memory,
+                    prior_spec_failures=
+                        prior_spec_failures
                 )
             )
 
@@ -570,6 +760,59 @@ def run_test_contract_phase(
                 )
                 continue
 
+            fingerprint = snippet_fingerprint(
+                snippet
+            )
+
+            if fingerprint in rejected_fingerprints:
+                repeat_issue = (
+                    "This contract is semantically identical "
+                    "to one this run already proved does not "
+                    "compile. Produce a materially different "
+                    "contract that resolves the issues above "
+                    "instead of reformatting the same one."
+                )
+
+                print(
+                    "REPEATED INVALID CONTRACT DETECTED: "
+                    "skipping recompilation and review."
+                )
+
+                snippet = revise([repeat_issue])
+
+                continue
+
+            gate_ok, gate_issues = (
+                deterministic_contract_gate(
+                    config,
+                    workspace,
+                    path,
+                    merged,
+                    task,
+                    adapter,
+                    repository_files,
+                    attempt,
+                    runner=contract_runner
+                )
+            )
+
+            if not gate_ok:
+                rejected_fingerprints.add(
+                    fingerprint
+                )
+
+                rejection_memory.append(
+                    {
+                        "attempt": attempt,
+                        "reviewer": "compilation",
+                        "issues": gate_issues
+                    }
+                )
+
+                snippet = revise(gate_issues)
+
+                continue
+
             structural_outcome = _resolve_reviewer_verdict(
                 config,
                 config["test_reviewer_model"],
@@ -577,7 +820,9 @@ def run_test_contract_phase(
                     task,
                     implementation_context,
                     merged,
-                    prior_issues=rejection_memory
+                    prior_issues=rejection_memory,
+                    prior_spec_failures=
+                        prior_spec_failures
                 ),
                 "structural",
                 path,
@@ -631,7 +876,9 @@ def run_test_contract_phase(
                     task,
                     implementation_context,
                     merged,
-                    prior_issues=rejection_memory
+                    prior_issues=rejection_memory,
+                    prior_spec_failures=
+                        prior_spec_failures
                 ),
                 "semantic",
                 path,
@@ -688,7 +935,9 @@ def run_test_contract_phase(
                     task,
                     implementation_context,
                     merged,
-                    prior_issues=rejection_memory
+                    prior_issues=rejection_memory,
+                    prior_spec_failures=
+                        prior_spec_failures
                 ),
                 "semantic_confirmation",
                 path,
@@ -739,6 +988,16 @@ def run_test_contract_phase(
                     "file": path
                 }
             )
+
+            # Carry the *reasons* over the outer SPEC ATTEMPT boundary
+            # so the next attempt does not rediscover them from scratch.
+            for entry in rejection_memory:
+                for issue in entry.get("issues", []):
+                    record_spec_failure(
+                        config,
+                        f"contract/{entry['reviewer']}",
+                        issue
+                    )
 
             return None
 

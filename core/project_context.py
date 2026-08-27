@@ -66,11 +66,30 @@ def build_project_context(
     authoritative_limit=DEFAULT_AUTHORITATIVE_LIMIT,
     supporting_limit=DEFAULT_SUPPORTING_LIMIT,
     total_limit=DEFAULT_TOTAL_LIMIT,
-    isolate_selected_source=False
+    isolate_selected_source=False,
+    isolation=None
 ):
+    """
+    Resolve the authoritative source and its supporting context.
+
+    When a WorkIsolation boundary is supplied, restricted sources are
+    dropped before authority resolution, so they cannot appear as current
+    work, authoritative context, supporting context, or even in the
+    printed inventory.
+    """
+
     sources = discover_project_sources(
         workspace
     )
+
+    if isolation is not None:
+        sources = [
+            source
+            for source in sources
+            if not isolation.is_restricted(
+                source["path"]
+            )
+        ]
 
     resolution = resolve_authority(
         sources

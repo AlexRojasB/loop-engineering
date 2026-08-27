@@ -16,6 +16,14 @@ CURRENT NEW TEST METHODS:
 
 {snippet}
 
+FINDINGS FROM PREVIOUS ATTEMPTS AT THIS SAME WORK ITEM:
+
+{prior_spec_failures}
+
+These come from earlier outer attempts at this same work item, before
+the repository was restored. They are known traps: do not reintroduce
+any of them.
+
 PREVIOUSLY RAISED CONCERNS IN THIS TEST CONTRACT RUN:
 
 {prior_issues}

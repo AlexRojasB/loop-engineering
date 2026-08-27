@@ -1,8 +1,10 @@
 import json
-import subprocess
 import urllib.request
 from pathlib import Path
 
+from core.isolation import WorkIsolation
+from core.repository import run_argv
+from core.spec_memory import record_spec_failure
 from core.state import (
     append_history,
     mark_phase_completed,
@@ -33,7 +35,15 @@ def _safe_path(root, requested):
     return path
 
 
-def _read_file(root, path):
+def _read_file(root, path, isolation=None):
+    if (
+        isolation is not None
+        and isolation.is_restricted(path)
+    ):
+        return isolation.rejection_message(
+            path
+        )
+
     target = _safe_path(
         root,
         path
@@ -76,7 +86,8 @@ def _write_file(
 
 def _list_files(
     root,
-    requested_path=None
+    requested_path=None,
+    isolation=None
 ):
     start = root
 
@@ -107,6 +118,17 @@ def _list_files(
                 ".agent",
             }
             for part in relative.parts
+        ):
+            continue
+
+        # Restricted work items are not merely unreadable: they are not
+        # discoverable either. Listing them would still tell the agent
+        # that future requirements exist.
+        if (
+            isolation is not None
+            and isolation.is_restricted(
+                str(relative)
+            )
         ):
             continue
 
@@ -206,16 +228,13 @@ def _resolve_operation_argv(
 
 
 def _run_argv(root, argv):
-    result = subprocess.run(
+    result = run_argv(
+        root,
         argv,
-        cwd=root,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
         timeout=240
     )
 
-    output = result.stdout
+    output = result["output"]
 
     if len(output) > 16000:
         output = (
@@ -225,7 +244,7 @@ def _run_argv(root, argv):
         )
 
     return (
-        f"exit_code={result.returncode}\n"
+        f"exit_code={result['exit_code']}\n"
         f"{output}"
     )
 
@@ -425,7 +444,8 @@ def _execute_tool(
     call,
     writable_paths,
     adapter,
-    repository_files
+    repository_files,
+    isolation=None
 ):
     function = call[
         "function"
@@ -456,7 +476,8 @@ def _execute_tool(
         if name == "read_file":
             return _read_file(
                 root,
-                args["path"]
+                args["path"],
+                isolation
             )
 
         if name == "write_file":
@@ -472,7 +493,8 @@ def _execute_tool(
                 root,
                 args.get(
                     "path"
-                )
+                ),
+                isolation
             )
 
         if name == "run_operation":
@@ -549,7 +571,8 @@ def run_agentic_implementation_phase(
     build_command,
     test_command,
     adapter,
-    repository_files
+    repository_files,
+    isolation=None
 ):
     print()
     print("=" * 60)
@@ -567,6 +590,15 @@ def run_agentic_implementation_phase(
     root = Path(
         workspace
     ).resolve()
+
+    if isolation is None:
+        isolation = WorkIsolation.disabled()
+
+    if isolation.active:
+        print()
+        print(
+            isolation.describe()
+        )
 
     writable_paths = {
         change["path"]
@@ -636,6 +668,10 @@ Rules:
 - Continue iterating until build and tests both pass.
 - Do not merely describe actions. Use tools.
 - Do not stop immediately after a failed command.
+- The supplied task is the ONLY specification in scope. Do not implement
+  behavior it does not request, even if the repository suggests it.
+- Some documents are outside the current work boundary and are neither
+  listed nor readable. That is intentional; do not work around it.
 
 Use the run_operation tool for all build/test/Git actions. It does not
 accept arbitrary shell commands; you request one of a fixed set of
@@ -792,6 +828,15 @@ Work until both the required build and test commands succeed.
                 "reaching GREEN."
             )
 
+            record_spec_failure(
+                config,
+                "implementation",
+                "A previous attempt's implementation never "
+                "reached GREEN against the frozen contract. "
+                "Re-check that the contract is actually "
+                "satisfiable by the requested change alone."
+            )
+
             return False
 
         for call in tool_calls:
@@ -800,7 +845,8 @@ Work until both the required build and test commands succeed.
                 call,
                 writable_paths,
                 adapter,
-                repository_files
+                repository_files,
+                isolation
             )
 
             print()

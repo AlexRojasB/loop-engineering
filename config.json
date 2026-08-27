@@ -21,5 +21,6 @@
   "agentic_implementation_enabled": true,
   "agentic_model": "qwen3.5:4b",
   "agentic_context_size": 16384,
-  "agentic_max_steps": 40
+  "agentic_max_steps": 40,
+  "contract_compilation_check": true
 }

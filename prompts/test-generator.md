@@ -12,6 +12,14 @@ EXISTING TEST FILE:
 
 {existing_tests}
 
+PREVIOUS ATTEMPT FINDINGS FOR THIS SAME WORK ITEM:
+
+{prior_spec_failures}
+
+These come from earlier outer attempts at this same work item; the
+repository has since been restored. Do not regenerate a test that
+repeats any of them.
+
 Generate ONLY the new test methods required for the task.
 
 IMPORTANT:

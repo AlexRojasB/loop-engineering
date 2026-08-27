@@ -9,6 +9,7 @@ from core.phases.review_phase import run_review_phase
 from core.phases.test_contract_phase import run_test_contract_phase
 from core.phases.test_phase import run_test_phase
 
+from core.isolation import WorkIsolation
 from core.repository import (
     discover_files,
     ensure_clean_baseline,
@@ -96,8 +97,21 @@ def run_pipeline(
     # Repository / language discovery
     # --------------------------------------------------------
 
+    isolation = WorkIsolation.from_dict(
+        config.get(
+            "isolation"
+        )
+    )
+
+    if isolation.active:
+        print()
+        print(
+            isolation.describe()
+        )
+
     repository_files = discover_files(
-        workspace
+        workspace,
+        isolation=isolation
     )
 
     adapter = detect_adapter(
@@ -275,7 +289,8 @@ def run_pipeline(
                 config.get(
                     "project_context",
                     {}
-                )
+                ),
+                isolation
             )
         )
 
@@ -333,7 +348,9 @@ def run_pipeline(
                     task,
                     state,
                     implementation_changes,
-                    test_changes
+                    test_changes,
+                    adapter,
+                    repository_files
                 )
             )
 
@@ -385,7 +402,9 @@ def run_pipeline(
                     workspace,
                     state,
                     test_snapshot,
-                    test_command
+                    test_command,
+                    adapter,
+                    task
                 )
             ):
                 return finish(False)
@@ -444,7 +463,8 @@ def run_pipeline(
                         build_command,
                         test_command,
                         adapter,
-                        repository_files
+                        repository_files,
+                        isolation
                     )
             )
 

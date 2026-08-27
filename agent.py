@@ -2,6 +2,11 @@ import argparse
 import subprocess
 from pathlib import Path
 
+from core.isolation import (
+    WorkIsolation,
+    build_work_isolation,
+    sibling_source_paths,
+)
 from core.pipeline import run_pipeline
 from core.repository import git_restore_all
 from core.project_context import (
@@ -10,6 +15,11 @@ from core.project_context import (
     selectable_sources,
 )
 from core.project_runtime import configure_project_runtime
+from core.project_sources import discover_project_sources
+from core.spec_memory import (
+    SpecFailureMemory,
+    spec_scope_key,
+)
 from core.resume import (
     format_resume_report,
     inspect_resume_state,
@@ -240,16 +250,105 @@ def commit_spec_result(
     return True
 
 
-def run_single_spec(
+def build_spec_isolation(
+    project,
+    spec_path,
+    queued_paths=None
+):
+    """
+    Isolation boundary for one queued work item.
+
+    Peers are the other queued work items when a queue is known,
+    otherwise the other project sources sitting alongside this one. The
+    current item may re-admit any of them by declaring an explicit
+    dependency.
+    """
+
+    source_text = ""
+
+    try:
+        source_text = (
+            project / spec_path
+        ).read_text()
+
+    except OSError:
+        source_text = ""
+
+    if queued_paths is None:
+        peers = sibling_source_paths(
+            discover_project_sources(
+                project
+            ),
+            spec_path
+        )
+
+    else:
+        peers = [
+            path
+            for path in queued_paths
+            if path != spec_path
+        ]
+
+    return build_work_isolation(
+        spec_path,
+        peers,
+        source_text=source_text
+    )
+
+
+def attach_spec_memory(
     config,
     project,
     spec_path
 ):
+    """
+    Bind bounded failure memory scoped to THIS work item only.
+
+    Keyed by path plus a hash of the item's content, so it can never be
+    inherited by a different work item, and never survives an edit to
+    this one.
+    """
+
+    try:
+        source_text = (
+            project / spec_path
+        ).read_text()
+
+    except OSError:
+        source_text = ""
+
+    scope = spec_scope_key(
+        spec_path,
+        source_text
+    )
+
+    memory = SpecFailureMemory.load(
+        config.get(
+            "spec_memory_file"
+        ),
+        scope
+    )
+
+    config["spec_memory"] = memory
+
+    return memory
+
+
+def run_single_spec(
+    config,
+    project,
+    spec_path,
+    isolation=None
+):
+    if isolation is None:
+        isolation = WorkIsolation.disabled()
+
     context = build_project_context(
         project,
         selected_source_path=
             spec_path,
-        isolate_selected_source=True
+        isolate_selected_source=True,
+        isolation=isolation
     )
 
     print()
@@ -287,6 +386,10 @@ def run_single_spec(
     run_config[
         "project_context"
     ] = context
+
+    run_config[
+        "isolation"
+    ] = isolation.to_dict()
 
     run_config["resume"] = False
 
@@ -422,6 +525,20 @@ def main():
                 5
             )
 
+            isolation = build_spec_isolation(
+                project,
+                spec_path,
+                queued_paths=spec_queue
+            )
+
+            # Bounded failure memory for THIS spec, shared across its
+            # outer attempts and nothing else.
+            spec_memory = attach_spec_memory(
+                config,
+                project,
+                spec_path
+            )
+
             success = False
 
             for spec_attempt in range(
@@ -438,7 +555,8 @@ def main():
                 success = run_single_spec(
                     config,
                     project,
-                    spec_path
+                    spec_path,
+                    isolation=isolation
                 )
 
                 if success:
@@ -456,6 +574,13 @@ def main():
                 )
 
             if not success:
+                spec_memory.clear()
+
+                config.pop(
+                    "spec_memory",
+                    None
+                )
+
                 print()
                 print("=" * 60)
                 print("MULTI-SPEC RUN STOPPED")
@@ -474,6 +599,15 @@ def main():
                 )
 
                 return 1
+
+            # The work item succeeded: its failure memory has served
+            # its purpose and must not survive into anything else.
+            spec_memory.clear()
+
+            config.pop(
+                "spec_memory",
+                None
+            )
 
             try:
                 commit_spec_result(
@@ -510,10 +644,25 @@ def main():
 
         return 0
 
+    isolation = WorkIsolation.disabled()
+
+    if args.spec:
+        isolation = build_spec_isolation(
+            project,
+            args.spec
+        )
+
+        attach_spec_memory(
+            config,
+            project,
+            args.spec
+        )
+
     context = build_project_context(
         project,
         selected_source_path=
-            args.spec
+            args.spec,
+        isolation=isolation
     )
 
     print()
@@ -604,6 +753,10 @@ def main():
     config[
         "project_context"
     ] = context
+
+    config[
+        "isolation"
+    ] = isolation.to_dict()
 
     success = run_pipeline(
         config,

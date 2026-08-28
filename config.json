@@ -7,8 +7,6 @@
   "test_reviewer_thinking": true,
   "reviewer_context_size": 16384,
   "reviewer_output_tokens": 2048,
-  "state_file": "runtime/state.json",
-  "history_file": "runtime/history.jsonl",
   "model_timeout_seconds": 420,
   "retry_timeout_seconds": 300,
   "escalation_after_test_repairs": 2,
@@ -22,5 +20,12 @@
   "agentic_model": "qwen3.5:4b",
   "agentic_context_size": 16384,
   "agentic_max_steps": 40,
-  "contract_compilation_check": true
+  "contract_compilation_check": true,
+  "contract_challenge_enabled": true,
+  "max_contract_challenge_submissions": 4,
+  "max_contract_challenges": 2,
+  "max_contract_reopens": 1,
+  "challenge_reviewer_thinking": true,
+  "challenge_hint_after_repeats": 3,
+  "challenge_reviewer_timeout_seconds": 900
 }

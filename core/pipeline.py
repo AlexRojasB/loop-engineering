@@ -9,12 +9,24 @@ from core.phases.review_phase import run_review_phase
 from core.phases.test_contract_phase import run_test_contract_phase
 from core.phases.test_phase import run_test_phase
 
+from core.contract_challenge import (
+    DEFAULT_MAX_REOPENS,
+    challenge_memory_entry,
+)
 from core.isolation import WorkIsolation
+from core.phases.agentic_implementation_phase import (
+    COMPLETED,
+    CONTRACT_CHALLENGED,
+    normalize_implementation_outcome,
+)
+from core.phases.test_contract_phase import snippet_fingerprint
 from core.repository import (
     discover_files,
     ensure_clean_baseline,
-    git_restore_all,
+    restore_snapshot,
+    rollback_repository,
 )
+from core.spec_memory import record_spec_failure
 
 from core.resume import (
     inspect_resume_state,
@@ -152,6 +164,10 @@ def run_pipeline(
 
     resume_phase = None
 
+    # A resumed run never established a clean baseline, so it must not
+    # delete untracked files it cannot attribute to itself.
+    baseline_verified = False
+
     if resume_requested:
         inspection = inspect_resume_state(
             config,
@@ -225,6 +241,11 @@ def run_pipeline(
             workspace
         ):
             return finish(False)
+
+        # This run proved the repository was clean before touching it,
+        # so any untracked file present later was created by this
+        # attempt and may be removed on rollback.
+        baseline_verified = True
 
         state = default_state(
             task
@@ -329,166 +350,385 @@ def run_pipeline(
         return finish(False)
 
     # --------------------------------------------------------
-    # PHASE 2 - Test contract
+    # PHASES 2-4 - Test Contract / Expected RED / Implementation
+    #
+    # These three phases are one BOUNDED CYCLE, not a straight line.
+    #
+    # The implementation phase can now return a third answer: a
+    # CONFIRMED contract challenge. That means independent validation
+    # reproduced a cited failure and two independent reviewers agreed
+    # the frozen contract itself cannot be satisfied by any correct
+    # implementation. Continuing would spend the rest of the attempt
+    # against a contract already proved impossible (Ledger Full #2:
+    # correctly diagnosed at agentic step 6, abandoned at step 31), so
+    # control returns to the Test Contract phase.
+    #
+    # Strictly bounded and fail-closed:
+    # - only a CONFIRMED challenge reopens anything;
+    # - at most max_contract_reopens reopenings per spec attempt;
+    # - the confirmed defect goes into cross-attempt memory, and the
+    #   exact frozen contract that was disproved is forbidden, so the
+    #   next contract cannot be a reformat of the same one;
+    # - once the reopen budget is spent, the attempt fails normally and
+    #   the outer SPEC ATTEMPT loop takes over with memory intact.
     # --------------------------------------------------------
+
+    max_contract_reopens = max(
+        0,
+        int(
+            config.get(
+                "max_contract_reopens",
+                DEFAULT_MAX_REOPENS
+            )
+        )
+    )
+
+    # At least one cycle always runs: a misconfigured negative reopen
+    # budget must disable reopening, never skip the phases.
+    max_contract_cycles = (
+        max_contract_reopens + 1
+    )
+
+    forbidden_fingerprints = set(
+        config.get(
+            "forbidden_contract_fingerprints"
+        )
+        or ()
+    )
 
     contract = None
 
-    if tests_required:
-        if (
-            not resume_requested
-            or resume_phase
-            == "planning"
-        ):
-            contract = timed_phase(
-                "test_contract",
-                lambda: run_test_contract_phase(
-                    config,
-                    workspace,
-                    task,
-                    state,
-                    implementation_changes,
-                    test_changes,
-                    adapter,
-                    repository_files
-                )
-            )
-
-            if not contract:
-                return finish(False)
-
-        else:
-            print()
-            print(
-                "Preserving frozen test contract "
-                "from interrupted run."
-            )
-
-    else:
-        print()
-        print("=" * 60)
-        print("PHASE 2 - TEST CONTRACT SKIPPED")
-        print("=" * 60)
-        print(
-            "Structural change: no new "
-            "test contract required."
-        )
-
-    # --------------------------------------------------------
-    # PHASE 3 - Expected RED
-    # --------------------------------------------------------
-
-    if tests_required:
-        if (
-            not resume_requested
-            or resume_phase
-            in (
-                "planning",
-                "tests_frozen",
-            )
-        ):
-            test_snapshot = (
-                contract[
-                    "test_snapshot"
-                ]
-                if contract
-                else {}
-            )
-
-            if not timed_phase(
-                "expected_red",
-                lambda: run_expected_red_phase(
-                    config,
-                    workspace,
-                    state,
-                    test_snapshot,
-                    test_command,
-                    adapter,
-                    task
-                )
-            ):
-                return finish(False)
-
-        else:
-            print()
-            print(
-                "Expected RED was already passed "
-                "in the interrupted run."
-            )
-
-    else:
-        print()
-        print("=" * 60)
-        print("PHASE 3 - EXPECTED RED SKIPPED")
-        print("=" * 60)
-        print(
-            "Existing regression tests will "
-            "still run after implementation."
-        )
-
-    # --------------------------------------------------------
-    # PHASE 4 - Implementation
-    # --------------------------------------------------------
-
-    implementation_incomplete = (
-        resume_requested
-        and resume_phase
-        == "implementation"
-        and resume_phase_status
-        != "completed"
-    )
-
-    if (
-        not resume_requested
-        or resume_phase
-        in (
-            "planning",
-            "tests_frozen",
-        )
-        or implementation_incomplete
+    for contract_cycle in range(
+        1,
+        max_contract_cycles + 1
     ):
-        if config.get(
-            "agentic_implementation_enabled",
-            False
-        ):
-            implementation_result = timed_phase(
-                "implementation",
-                lambda:
-                    run_agentic_implementation_phase(
+        first_cycle = contract_cycle == 1
+
+        cycle_resume = (
+            resume_requested
+            and first_cycle
+        )
+
+        if not first_cycle:
+            print()
+            print("=" * 60)
+            print(
+                "TEST CONTRACT REOPENED "
+                f"({contract_cycle}/"
+                f"{max_contract_cycles})"
+            )
+            print("=" * 60)
+
+            repository_files = discover_files(
+                workspace,
+                isolation=isolation
+            )
+
+        config[
+            "forbidden_contract_fingerprints"
+        ] = set(
+            forbidden_fingerprints
+        )
+
+        # ----------------------------------------------------
+        # PHASE 2 - Test contract
+        # ----------------------------------------------------
+
+        if tests_required:
+            if (
+                not cycle_resume
+                or resume_phase
+                == "planning"
+            ):
+                contract = timed_phase(
+                    "test_contract",
+                    lambda: run_test_contract_phase(
                         config,
                         workspace,
                         task,
                         state,
                         implementation_changes,
-                        build_command,
+                        test_changes,
+                        adapter,
+                        repository_files
+                    )
+                )
+
+                if not contract:
+                    return finish(False)
+
+            else:
+                print()
+                print(
+                    "Preserving frozen test contract "
+                    "from interrupted run."
+                )
+
+        else:
+            print()
+            print("=" * 60)
+            print("PHASE 2 - TEST CONTRACT SKIPPED")
+            print("=" * 60)
+            print(
+                "Structural change: no new "
+                "test contract required."
+            )
+
+        # ----------------------------------------------------
+        # PHASE 3 - Expected RED
+        # ----------------------------------------------------
+
+        if tests_required:
+            if (
+                not cycle_resume
+                or resume_phase
+                in (
+                    "planning",
+                    "tests_frozen",
+                )
+            ):
+                test_snapshot = (
+                    contract[
+                        "test_snapshot"
+                    ]
+                    if contract
+                    else {}
+                )
+
+                if not timed_phase(
+                    "expected_red",
+                    lambda: run_expected_red_phase(
+                        config,
+                        workspace,
+                        state,
+                        test_snapshot,
                         test_command,
                         adapter,
-                        repository_files,
-                        isolation
+                        task
                     )
+                ):
+                    return finish(False)
+
+            else:
+                print()
+                print(
+                    "Expected RED was already passed "
+                    "in the interrupted run."
+                )
+
+        else:
+            print()
+            print("=" * 60)
+            print("PHASE 3 - EXPECTED RED SKIPPED")
+            print("=" * 60)
+            print(
+                "Existing regression tests will "
+                "still run after implementation."
+            )
+
+        # ----------------------------------------------------
+        # PHASE 4 - Implementation
+        # ----------------------------------------------------
+
+        implementation_incomplete = (
+            cycle_resume
+            and resume_phase
+            == "implementation"
+            and resume_phase_status
+            != "completed"
+        )
+
+        if (
+            not cycle_resume
+            or resume_phase
+            in (
+                "planning",
+                "tests_frozen",
+            )
+            or implementation_incomplete
+        ):
+            frozen_tests = (
+                contract.get(
+                    "frozen_tests"
+                )
+                if contract
+                else None
+            )
+
+            if config.get(
+                "agentic_implementation_enabled",
+                False
+            ):
+                implementation_result = timed_phase(
+                    "implementation",
+                    lambda:
+                        run_agentic_implementation_phase(
+                            config,
+                            workspace,
+                            task,
+                            state,
+                            implementation_changes,
+                            build_command,
+                            test_command,
+                            adapter,
+                            repository_files,
+                            isolation,
+                            frozen_tests=frozen_tests
+                        )
+                )
+
+            else:
+                implementation_result = timed_phase(
+                    "implementation",
+                    lambda:
+                        run_implementation_phase(
+                            config,
+                            workspace,
+                            task,
+                            state,
+                            implementation_changes
+                        )
+                )
+
+            outcome = (
+                normalize_implementation_outcome(
+                    implementation_result
+                )
             )
 
         else:
-            implementation_result = timed_phase(
-                "implementation",
-                lambda:
-                    run_implementation_phase(
-                        config,
-                        workspace,
-                        task,
-                        state,
-                        implementation_changes
-                    )
+            print()
+            print(
+                "Preserving existing production "
+                "changes from interrupted run."
             )
 
-        if not implementation_result:
+            outcome = {
+                "status": COMPLETED
+            }
+
+        if outcome["status"] == COMPLETED:
+            break
+
+        if (
+            outcome["status"]
+            != CONTRACT_CHALLENGED
+        ):
             return finish(False)
 
-    else:
+        # --- confirmed contract challenge -------------------
+
+        challenge = outcome[
+            "challenge"
+        ]
+
         print()
+        print("=" * 60)
         print(
-            "Preserving existing production "
-            "changes from interrupted run."
+            "FROZEN CONTRACT CHALLENGE CONFIRMED"
+        )
+        print("=" * 60)
+
+        for reason in (
+            outcome["verdict"].get(
+                "reasons"
+            )
+            or []
+        ):
+            print(f"- {reason}")
+
+        if contract:
+            for content in (
+                contract.get(
+                    "frozen_tests"
+                )
+                or {}
+            ).values():
+                forbidden_fingerprints.add(
+                    snippet_fingerprint(
+                        content
+                    )
+                )
+
+        # Survives the outer SPEC ATTEMPT restore, so a later attempt
+        # never regenerates the disproved contract from scratch.
+        record_spec_failure(
+            config,
+            "contract/challenge_confirmed",
+            challenge_memory_entry(
+                challenge
+            )
+        )
+
+        if contract_cycle >= max_contract_cycles:
+            print()
+            print(
+                "Contract reopen budget exhausted. "
+                "Failing this spec attempt."
+            )
+
+            residual = rollback_repository(
+                workspace,
+                clean_untracked=baseline_verified
+            )
+
+            if residual.strip():
+                print(
+                    "WARNING: repository is still not clean "
+                    "after rollback:"
+                )
+                print(residual)
+
+            mark_run_failed(
+                config,
+                state,
+                "Frozen test contract was challenged and "
+                "confirmed inconsistent, and the contract reopen "
+                "budget is exhausted.",
+                rolled_back=True
+            )
+
+            return finish(False)
+
+        append_history(
+            config,
+            "test_contract_reopened",
+            {
+                "cycle": contract_cycle,
+                "challenge": challenge
+            }
+        )
+
+        # Discard everything this cycle produced: the disproved frozen
+        # contract AND the production work written against it.
+        rollback_repository(
+            workspace,
+            clean_untracked=baseline_verified
+        )
+
+        if contract:
+            restore_snapshot(
+                workspace,
+                contract[
+                    "test_snapshot"
+                ]
+            )
+
+        contract = None
+
+        # A reopen is a fresh forward run, never a resume.
+        resume_requested = False
+        resume_phase = None
+        resume_phase_status = None
+
+        state["tests_frozen"] = False
+        state["tests_reviewed"] = False
+        state["tests_generated"] = False
+        state["expected_red_confirmed"] = False
+
+        save_state(
+            config,
+            state
         )
 
     # --------------------------------------------------------
@@ -515,8 +755,9 @@ def run_pipeline(
             "Build did not converge."
         )
 
-        git_restore_all(
-            workspace
+        rollback_repository(
+            workspace,
+            clean_untracked=baseline_verified
         )
 
         mark_run_failed(
@@ -562,8 +803,9 @@ def run_pipeline(
             "Tests did not converge."
         )
 
-        git_restore_all(
-            workspace
+        rollback_repository(
+            workspace,
+            clean_untracked=baseline_verified
         )
 
         mark_run_failed(

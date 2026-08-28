@@ -760,6 +760,52 @@ def run_test_contract_phase(
                 )
                 continue
 
+            # A contract an independent validator already PROVED
+            # impossible (see core/contract_challenge.py) must not come
+            # back byte-for-byte after the Test Contract is reopened.
+            # Comparison is on the merged file and ignores comments and
+            # formatting, so a cosmetic rewrite of the same contract is
+            # still the same contract.
+            if snippet_fingerprint(
+                merged
+            ) in (
+                config.get(
+                    "forbidden_contract_fingerprints"
+                )
+                or set()
+            ):
+                forbidden_issue = (
+                    "This is the same test contract an independent "
+                    "review already confirmed is impossible to "
+                    "satisfy. It cannot be frozen again. Produce a "
+                    "materially different contract that resolves the "
+                    "confirmed contradiction described above."
+                )
+
+                print(
+                    "FORBIDDEN CONTRACT DETECTED: a confirmed "
+                    "contract challenge already disproved this "
+                    "contract."
+                )
+
+                rejection_memory.append(
+                    {
+                        "attempt": attempt,
+                        "reviewer": "challenge",
+                        "issues": [
+                            forbidden_issue
+                        ]
+                    }
+                )
+
+                snippet = revise(
+                    [
+                        forbidden_issue
+                    ]
+                )
+
+                continue
+
             fingerprint = snippet_fingerprint(
                 snippet
             )

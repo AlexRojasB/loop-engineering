@@ -8,13 +8,16 @@ from core.isolation import (
     sibling_source_paths,
 )
 from core.pipeline import run_pipeline
-from core.repository import git_restore_all
+from core.repository import git_status, rollback_repository
 from core.project_context import (
     build_project_context,
     format_project_context_report,
     selectable_sources,
 )
-from core.project_runtime import configure_project_runtime
+from core.project_runtime import (
+    configure_project_runtime,
+    format_legacy_runtime_report,
+)
 from core.project_sources import discover_project_sources
 from core.spec_memory import (
     SpecFailureMemory,
@@ -422,10 +425,25 @@ def main():
         project
     )
 
-    config = configure_project_runtime(
-        config,
-        project
+    try:
+        config = configure_project_runtime(
+            config,
+            project
+        )
+
+    except ValueError as exc:
+        print(exc)
+        return 1
+
+    legacy_report = format_legacy_runtime_report(
+        config.get(
+            "legacy_runtime_report"
+        )
     )
+
+    if legacy_report:
+        print()
+        print(legacy_report)
 
     config["resume"] = bool(
         args.resume
@@ -552,6 +570,14 @@ def main():
                     f"{max_spec_attempts}"
                 )
 
+                # Whether untracked files may be removed on rollback is
+                # decided BEFORE the attempt runs. If the repository was
+                # already dirty, whatever is untracked belongs to the
+                # user, not to this attempt, and must survive.
+                was_clean = not git_status(
+                    project
+                ).strip()
+
                 success = run_single_spec(
                     config,
                     project,
@@ -569,9 +595,27 @@ def main():
                     "repository state before retry."
                 )
 
-                git_restore_all(
-                    project
+                residual = rollback_repository(
+                    project,
+                    clean_untracked=was_clean
                 )
+
+                if residual.strip():
+                    # The next attempt's clean-baseline check would
+                    # fail here. Say why now, rather than four times
+                    # in a row with no explanation.
+                    print(
+                        "WARNING: repository is still not clean "
+                        "after rollback:"
+                    )
+                    print(residual)
+
+                    if not was_clean:
+                        print(
+                            "Untracked files were left in place "
+                            "because the repository was already "
+                            "dirty before this attempt."
+                        )
 
             if not success:
                 spec_memory.clear()

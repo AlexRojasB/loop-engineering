@@ -4,6 +4,8 @@ import re
 import subprocess
 import urllib.request
 
+from core.project_runtime import harness_project_runtime_dir
+
 OLLAMA_URL = "http://localhost:11434/api/generate"
 
 
@@ -324,9 +326,25 @@ REVIEWER FEEDBACK:
 
         code = sanitize_code(response)
 
+        # Per-cycle attempt history is HARNESS runtime state, not part
+        # of the user's project. Writing it into the target repository
+        # leaves untracked artifacts behind that survive rollback and
+        # break the next attempt's clean-baseline check.
         attempt_path = os.path.join(
-            project_path,
-            f".ai-cycle-{iteration}.txt"
+            str(
+                harness_project_runtime_dir(
+                    project_path
+                )
+                / "cycles"
+            ),
+            f"cycle-{iteration}.txt"
+        )
+
+        os.makedirs(
+            os.path.dirname(
+                attempt_path
+            ),
+            exist_ok=True
         )
 
         with open(attempt_path, "w") as f:

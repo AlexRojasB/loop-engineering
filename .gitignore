@@ -8,6 +8,7 @@ venv/
 runtime/*.json
 runtime/*.jsonl
 runtime/spec-memory/
+runtime/projects/
 .agent/
 
 # Execution logs

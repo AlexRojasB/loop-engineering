@@ -235,3 +235,68 @@ def restore_snapshot(
             path,
             content
         )
+
+
+def git_clean_untracked(workspace):
+    """
+    Remove untracked, non-ignored files and directories.
+
+    Deliberately without -x: files the project itself ignores (build
+    output such as bin/ or obj/) are the project's business, are never
+    reported by `git status --short`, and re-creating them costs build
+    time. Everything else untracked at rollback time was created during
+    the attempt that just failed, because the harness refuses to start
+    an attempt unless `git status --short` is empty.
+    """
+
+    process = subprocess.run(
+        [
+            "git",
+            "clean",
+            "-fd"
+        ],
+        cwd=workspace,
+        capture_output=True,
+        text=True
+    )
+
+    return process.stdout
+
+
+def rollback_repository(
+    workspace,
+    clean_untracked=True
+):
+    """
+    Return the target repository to its last committed state.
+
+    Restoring tracked files is not sufficient on its own: a failed
+    attempt can also leave NEW files behind (a production file the
+    implementation agent created, or -- historically -- harness runtime
+    state). Those survive `git restore .` and then fail the next
+    attempt's clean-baseline check, which is exactly how one failed
+    Ledger attempt turned into four instant failures.
+
+    `clean_untracked` must be False whenever this run did NOT verify a
+    clean baseline at startup -- a resumed run, above all. Removing
+    untracked files is only provably safe when the harness knows every
+    untracked file present was created by the attempt it is discarding;
+    on a resumed run an untracked file may predate the harness entirely
+    and belong to the user.
+
+    Returns the resulting `git status --short` output, so callers can
+    prove the repository really is clean.
+    """
+
+    git_restore_all(
+        workspace
+    )
+
+    if clean_untracked:
+        git_clean_untracked(
+            workspace
+        )
+
+    return git_status(
+        workspace
+    )

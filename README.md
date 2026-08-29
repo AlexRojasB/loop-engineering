@@ -249,6 +249,59 @@ When memory has to be trimmed, the least authoritative entries are
 evicted first, so a burst of model opinions cannot push out the
 machine-verified finding that explains the failure.
 
+## Optional shutdown when all work is finished
+
+For long unattended runs on a dedicated machine, the harness can power
+the machine off once the ENTIRE requested workload has reached a
+controlled terminal state.
+
+It is opt-in. Without `--shutdown-when-done` nothing here can ever run:
+
+    python agent.py . --spec-dir specs/queue                  # never powers off
+    python agent.py . --spec-dir specs/queue --shutdown-when-done
+
+    --shutdown-when-done      enable automatic power-off (default off)
+    --no-shutdown-when-done   explicitly disable, overriding config
+    --shutdown-delay SECONDS  delay before power-off (default 60)
+    --shutdown-dry-run        run the whole decision path, never power off
+
+Config equivalents are `shutdown_when_done`, `shutdown_delay_seconds`
+and `shutdown_dry_run`. An explicit CLI flag always wins, in both
+directions.
+
+Shutdown is the LAST side effect of a successful finalization path, and
+everything about it fails toward staying powered on. Power-off is only
+reached when the run ended at an explicitly handled terminal state, the
+orchestrator has no remaining work, repository finalization succeeded,
+and both audit events are already on disk:
+
+    run_finished        result, run mode, completed/total work,
+                        failure reason, shutdown_when_done, timestamp
+    shutdown_requested  reason: run_terminal_and_idle
+
+An interrupt, an unexpected exception, a failed commit, an unclean
+rollback or an unwritable history file all leave the machine ON.
+
+For `--spec-dir`, only the MULTI-SPEC ORCHESTRATOR's own terminal
+result counts -- never an individual spec. A queue that stops at 4/8
+because a spec exhausted its retries is still terminal: this invocation
+will do no further work, so an opted-in operator gets a power-off once
+rollback came back clean.
+
+The decision, the audit trail and the OS call live in `core/power.py`
+(`ShutdownSettings`, `WorkloadResult`, `ShutdownPolicy`,
+`ShutdownController`, `RunFinalizer`, `LinuxPowerOffExecutor`), not
+scattered through the pipeline. The executor is argv-based, never
+shell-interpreted, embeds no password, and is mockable; the request is
+latched so at most one real power-off happens per run.
+`WorkloadResult.has_remaining_work()` is the single predicate a future
+job queue replaces.
+
+Real power-off runs `/usr/bin/systemctl poweroff` and requires a
+one-time OS authorization for the account running the harness; the
+harness never edits sudoers or polkit itself. Validate with
+`--shutdown-dry-run` first.
+
 ## Safety model
 
 The agentic phase is intentionally constrained:

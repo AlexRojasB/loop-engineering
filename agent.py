@@ -27,6 +27,14 @@ from core.resume import (
     format_resume_report,
     inspect_resume_state,
 )
+from core.power import (
+    DEFAULT_SHUTDOWN_DELAY_SECONDS,
+    RunFinalizer,
+    ShutdownSettings,
+    build_shutdown_controller,
+    multi_spec_result,
+    single_spec_result,
+)
 from core.utils import load_json
 
 
@@ -89,6 +97,62 @@ def parse_args():
         help=(
             "Display persisted resume state "
             "without running the agent"
+        )
+    )
+
+    # --- optional unattended power-off ---------------------------
+    #
+    # Opt-in only. The default is None rather than False so that
+    # silence on the command line is distinguishable from an explicit
+    # choice: an explicit CLI value overrides config.json in BOTH
+    # directions, and absence falls back to config, which itself
+    # defaults to off.
+
+    parser.add_argument(
+        "--shutdown-when-done",
+        dest="shutdown_when_done",
+        action="store_true",
+        default=None,
+        help=(
+            "Power off this machine after the ENTIRE run reaches a "
+            "controlled terminal state and all state has been "
+            "persisted. Off by default."
+        )
+    )
+
+    parser.add_argument(
+        "--no-shutdown-when-done",
+        dest="shutdown_when_done",
+        action="store_false",
+        default=None,
+        help=(
+            "Explicitly disable automatic shutdown, overriding "
+            "shutdown_when_done in config.json."
+        )
+    )
+
+    parser.add_argument(
+        "--shutdown-delay",
+        dest="shutdown_delay",
+        type=int,
+        default=None,
+        metavar="SECONDS",
+        help=(
+            "Seconds to wait between requesting shutdown and "
+            "invoking power-off "
+            f"(default {DEFAULT_SHUTDOWN_DELAY_SECONDS})."
+        )
+    )
+
+    parser.add_argument(
+        "--shutdown-dry-run",
+        dest="shutdown_dry_run",
+        action="store_true",
+        default=None,
+        help=(
+            "Run the full shutdown decision and finalization path, "
+            "including audit events, but never invoke system "
+            "power-off and never wait for the delay."
         )
     )
 
@@ -405,49 +469,343 @@ def run_single_spec(
     )
 
 
-def main():
-    args = parse_args()
+def build_run_finalizer(
+    config,
+    settings,
+    controller
+):
+    """
+    Seam for tests: everything below asks for its finalizer here, so a
+    test can inject a fake power-off executor and a fake sleeper and
+    still exercise the real policy, ordering and idempotency.
+    """
+
+    return RunFinalizer(
+        config,
+        settings,
+        controller=controller
+    )
+
+
+def note_shutdown_suppressed(
+    settings,
+    cause
+):
+    """
+    Say -- once, and only when the operator actually opted in -- that an
+    abnormal end prevented the automatic shutdown they asked for.
+
+    With shutdown disabled this prints nothing at all: the default path
+    must never emit a shutdown-shaped warning.
+    """
+
+    if not settings.enabled:
+        return False
+
+    print()
+    print(
+        f"Automatic shutdown suppressed: {cause}."
+    )
+    print(
+        "The machine will stay powered on."
+    )
+
+    return True
+
+
+def run_multi_spec(
+    args,
+    config,
+    project,
+    finalizer
+):
+    """
+    The multi-spec ORCHESTRATOR.
+
+    Shutdown is never considered for an individual spec: only the three
+    return points below -- queue completed, queue terminally stopped,
+    automatic commit failed -- represent a terminal workload result for
+    this invocation.
+    """
 
     try:
-        project = resolve_project(
-            args.project
+        spec_queue = discover_spec_queue(
+            project,
+            args.spec_dir
         )
 
     except ValueError as exc:
         print(exc)
         return 1
 
-    config = load_json(
-        CONFIG_PATH
-    )
+    print()
+    print("=" * 60)
+    print("MULTI-SPEC RUN")
+    print("=" * 60)
 
-    config["workspace"] = str(
-        project
-    )
-
-    try:
-        config = configure_project_runtime(
-            config,
-            project
-        )
-
-    except ValueError as exc:
-        print(exc)
-        return 1
-
-    legacy_report = format_legacy_runtime_report(
-        config.get(
-            "legacy_runtime_report"
-        )
-    )
-
-    if legacy_report:
+    for index, spec_path in enumerate(
+        spec_queue,
+        start=1
+    ):
         print()
-        print(legacy_report)
+        print(
+            f"[{index}/{len(spec_queue)}] "
+            f"{spec_path}"
+        )
 
-    config["resume"] = bool(
-        args.resume
+    completed = []
+
+    for index, spec_path in enumerate(
+        spec_queue,
+        start=1
+    ):
+        if spec_already_completed(
+            project,
+            spec_path
+        ):
+            print()
+            print(
+                f"SKIP completed spec: "
+                f"{spec_path}"
+            )
+            completed.append(
+                spec_path
+            )
+            continue
+
+        print()
+        print("=" * 60)
+        print(
+            f"SPEC {index}/{len(spec_queue)} "
+            f"- {spec_path}"
+        )
+        print("=" * 60)
+
+        max_spec_attempts = config.get(
+            "max_spec_attempts",
+            5
+        )
+
+        isolation = build_spec_isolation(
+            project,
+            spec_path,
+            queued_paths=spec_queue
+        )
+
+        # Bounded failure memory for THIS spec, shared across its
+        # outer attempts and nothing else.
+        spec_memory = attach_spec_memory(
+            config,
+            project,
+            spec_path
+        )
+
+        success = False
+
+        # Whether the repository was provably returned to its last
+        # committed state after the final failed attempt. Only
+        # consulted when the queue stops terminally, and it starts
+        # pessimistic: an unfinished rollback must never authorize a
+        # power-off.
+        rollback_clean = False
+
+        for spec_attempt in range(
+            1,
+            max_spec_attempts + 1
+        ):
+            print()
+            print(
+                f"SPEC ATTEMPT "
+                f"{spec_attempt}/"
+                f"{max_spec_attempts}"
+            )
+
+            # Whether untracked files may be removed on rollback is
+            # decided BEFORE the attempt runs. If the repository was
+            # already dirty, whatever is untracked belongs to the
+            # user, not to this attempt, and must survive.
+            was_clean = not git_status(
+                project
+            ).strip()
+
+            success = run_single_spec(
+                config,
+                project,
+                spec_path,
+                isolation=isolation
+            )
+
+            if success:
+                break
+
+            print()
+            print(
+                "Spec attempt failed. "
+                "Restoring last committed "
+                "repository state before retry."
+            )
+
+            residual = rollback_repository(
+                project,
+                clean_untracked=was_clean
+            )
+
+            rollback_clean = not residual.strip()
+
+            if residual.strip():
+                # The next attempt's clean-baseline check would
+                # fail here. Say why now, rather than four times
+                # in a row with no explanation.
+                print(
+                    "WARNING: repository is still not clean "
+                    "after rollback:"
+                )
+                print(residual)
+
+                if not was_clean:
+                    print(
+                        "Untracked files were left in place "
+                        "because the repository was already "
+                        "dirty before this attempt."
+                    )
+
+        if not success:
+            spec_memory.clear()
+
+            config.pop(
+                "spec_memory",
+                None
+            )
+
+            print()
+            print("=" * 60)
+            print("MULTI-SPEC RUN STOPPED")
+            print("=" * 60)
+            print(
+                f"Failed spec: {spec_path}"
+            )
+            print(
+                f"Attempts: "
+                f"{max_spec_attempts}"
+            )
+            print(
+                f"Completed: "
+                f"{len(completed)}/"
+                f"{len(spec_queue)}"
+            )
+
+            # Terminal workload result: this invocation will not run
+            # the remaining specs. Shutting down is allowed IF the
+            # operator opted in AND the repository really did come
+            # back clean.
+            finalizer.finalize(
+                multi_spec_result(
+                    completed_work=len(
+                        completed
+                    ),
+                    total_work=len(
+                        spec_queue
+                    ),
+                    failure_reason=(
+                        "Spec exhausted its configured retries: "
+                        f"{spec_path}"
+                    ),
+                    finalization_ok=rollback_clean
+                )
+            )
+
+            return 1
+
+        # The work item succeeded: its failure memory has served
+        # its purpose and must not survive into anything else.
+        spec_memory.clear()
+
+        config.pop(
+            "spec_memory",
+            None
+        )
+
+        try:
+            commit_spec_result(
+                project,
+                spec_path
+            )
+
+        except subprocess.CalledProcessError as exc:
+            print()
+            print(
+                "Automatic commit failed: "
+                f"{exc}"
+            )
+
+            # Repository finalization failed. The run is over, but
+            # the machine must stay on: the completed work is not
+            # safely committed.
+            finalizer.finalize(
+                multi_spec_result(
+                    completed_work=len(
+                        completed
+                    ),
+                    total_work=len(
+                        spec_queue
+                    ),
+                    failure_reason=(
+                        "Automatic commit failed for "
+                        f"{spec_path}: {exc}"
+                    ),
+                    finalization_ok=False
+                )
+            )
+
+            return 1
+
+        completed.append(
+            spec_path
+        )
+
+    print()
+    print("=" * 60)
+    print("MULTI-SPEC RUN PASSED")
+    print("=" * 60)
+    print(
+        f"Completed: "
+        f"{len(completed)}/"
+        f"{len(spec_queue)}"
     )
+
+    for spec_path in completed:
+        print(
+            f"- PASS {spec_path}"
+        )
+
+    finalizer.finalize(
+        multi_spec_result(
+            completed_work=len(
+                completed
+            ),
+            total_work=len(
+                spec_queue
+            )
+        )
+    )
+
+    return 0
+
+
+def run_workload(
+    args,
+    config,
+    project,
+    finalizer
+):
+    """
+    Everything this invocation was asked to execute.
+
+    Only the explicitly handled terminal returns below call
+    finalizer.finalize(). Inspection-only modes (--list-sources,
+    --resume-info), argument errors and unresolvable project context are
+    NOT workload results and never reach the shutdown policy.
+    """
 
     if (
         args.spec
@@ -485,208 +843,12 @@ def main():
         return 0
 
     if args.spec_dir:
-        try:
-            spec_queue = discover_spec_queue(
-                project,
-                args.spec_dir
-            )
-
-        except ValueError as exc:
-            print(exc)
-            return 1
-
-        print()
-        print("=" * 60)
-        print("MULTI-SPEC RUN")
-        print("=" * 60)
-
-        for index, spec_path in enumerate(
-            spec_queue,
-            start=1
-        ):
-            print()
-            print(
-                f"[{index}/{len(spec_queue)}] "
-                f"{spec_path}"
-            )
-
-        completed = []
-
-        for index, spec_path in enumerate(
-            spec_queue,
-            start=1
-        ):
-            if spec_already_completed(
-                project,
-                spec_path
-            ):
-                print()
-                print(
-                    f"SKIP completed spec: "
-                    f"{spec_path}"
-                )
-                completed.append(
-                    spec_path
-                )
-                continue
-
-            print()
-            print("=" * 60)
-            print(
-                f"SPEC {index}/{len(spec_queue)} "
-                f"- {spec_path}"
-            )
-            print("=" * 60)
-
-            max_spec_attempts = config.get(
-                "max_spec_attempts",
-                5
-            )
-
-            isolation = build_spec_isolation(
-                project,
-                spec_path,
-                queued_paths=spec_queue
-            )
-
-            # Bounded failure memory for THIS spec, shared across its
-            # outer attempts and nothing else.
-            spec_memory = attach_spec_memory(
-                config,
-                project,
-                spec_path
-            )
-
-            success = False
-
-            for spec_attempt in range(
-                1,
-                max_spec_attempts + 1
-            ):
-                print()
-                print(
-                    f"SPEC ATTEMPT "
-                    f"{spec_attempt}/"
-                    f"{max_spec_attempts}"
-                )
-
-                # Whether untracked files may be removed on rollback is
-                # decided BEFORE the attempt runs. If the repository was
-                # already dirty, whatever is untracked belongs to the
-                # user, not to this attempt, and must survive.
-                was_clean = not git_status(
-                    project
-                ).strip()
-
-                success = run_single_spec(
-                    config,
-                    project,
-                    spec_path,
-                    isolation=isolation
-                )
-
-                if success:
-                    break
-
-                print()
-                print(
-                    "Spec attempt failed. "
-                    "Restoring last committed "
-                    "repository state before retry."
-                )
-
-                residual = rollback_repository(
-                    project,
-                    clean_untracked=was_clean
-                )
-
-                if residual.strip():
-                    # The next attempt's clean-baseline check would
-                    # fail here. Say why now, rather than four times
-                    # in a row with no explanation.
-                    print(
-                        "WARNING: repository is still not clean "
-                        "after rollback:"
-                    )
-                    print(residual)
-
-                    if not was_clean:
-                        print(
-                            "Untracked files were left in place "
-                            "because the repository was already "
-                            "dirty before this attempt."
-                        )
-
-            if not success:
-                spec_memory.clear()
-
-                config.pop(
-                    "spec_memory",
-                    None
-                )
-
-                print()
-                print("=" * 60)
-                print("MULTI-SPEC RUN STOPPED")
-                print("=" * 60)
-                print(
-                    f"Failed spec: {spec_path}"
-                )
-                print(
-                    f"Attempts: "
-                    f"{max_spec_attempts}"
-                )
-                print(
-                    f"Completed: "
-                    f"{len(completed)}/"
-                    f"{len(spec_queue)}"
-                )
-
-                return 1
-
-            # The work item succeeded: its failure memory has served
-            # its purpose and must not survive into anything else.
-            spec_memory.clear()
-
-            config.pop(
-                "spec_memory",
-                None
-            )
-
-            try:
-                commit_spec_result(
-                    project,
-                    spec_path
-                )
-
-            except subprocess.CalledProcessError as exc:
-                print()
-                print(
-                    "Automatic commit failed: "
-                    f"{exc}"
-                )
-                return 1
-
-            completed.append(
-                spec_path
-            )
-
-        print()
-        print("=" * 60)
-        print("MULTI-SPEC RUN PASSED")
-        print("=" * 60)
-        print(
-            f"Completed: "
-            f"{len(completed)}/"
-            f"{len(spec_queue)}"
+        return run_multi_spec(
+            args,
+            config,
+            project,
+            finalizer
         )
-
-        for spec_path in completed:
-            print(
-                f"- PASS {spec_path}"
-            )
-
-        return 0
 
     isolation = WorkIsolation.disabled()
 
@@ -815,9 +977,118 @@ def main():
             "PIPELINE DID NOT COMPLETE"
         )
 
+        # A controlled terminal failure: the pipeline handled its own
+        # rollback and state persistence and returned normally.
+        finalizer.finalize(
+            single_spec_result(
+                passed=False,
+                failure_reason=(
+                    "Single-spec pipeline did not complete."
+                )
+            )
+        )
+
         return 1
 
+    finalizer.finalize(
+        single_spec_result(
+            passed=True
+        )
+    )
+
     return 0
+
+
+def main():
+    args = parse_args()
+
+    try:
+        project = resolve_project(
+            args.project
+        )
+
+    except ValueError as exc:
+        print(exc)
+        return 1
+
+    config = load_json(
+        CONFIG_PATH
+    )
+
+    config["workspace"] = str(
+        project
+    )
+
+    try:
+        config = configure_project_runtime(
+            config,
+            project
+        )
+
+    except ValueError as exc:
+        print(exc)
+        return 1
+
+    legacy_report = format_legacy_runtime_report(
+        config.get(
+            "legacy_runtime_report"
+        )
+    )
+
+    if legacy_report:
+        print()
+        print(legacy_report)
+
+    config["resume"] = bool(
+        args.resume
+    )
+
+    # Explicit CLI values win over config.json; absence of a flag falls
+    # back to config, which itself defaults to shutdown disabled.
+    shutdown_settings = ShutdownSettings.resolve(
+        config,
+        enabled=args.shutdown_when_done,
+        delay_seconds=args.shutdown_delay,
+        dry_run=args.shutdown_dry_run
+    )
+
+    shutdown_controller = build_shutdown_controller(
+        shutdown_settings
+    )
+
+    finalizer = build_run_finalizer(
+        config,
+        shutdown_settings,
+        shutdown_controller
+    )
+
+    # An abnormal end is NEVER a terminal workload result. The
+    # finalizer is only reached from explicitly handled returns inside
+    # run_workload(), so an interrupt or an unexpected exception cannot
+    # reach the shutdown policy at all. Both are re-raised unchanged;
+    # the handlers exist only to tell an operator who opted in why the
+    # machine is still on.
+    try:
+        return run_workload(
+            args,
+            config,
+            project,
+            finalizer
+        )
+
+    except KeyboardInterrupt:
+        note_shutdown_suppressed(
+            shutdown_settings,
+            "run interrupted (KeyboardInterrupt)"
+        )
+        raise
+
+    except Exception:
+        note_shutdown_suppressed(
+            shutdown_settings,
+            "unexpected exception"
+        )
+        raise
 
 
 if __name__ == "__main__":

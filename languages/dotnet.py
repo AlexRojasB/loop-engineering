@@ -606,3 +606,319 @@ class DotNetAdapter(LanguageAdapter):
                 len(value)
             )
         )[0]
+
+    # ------------------------------------------------------------------
+    # Intrinsic test-source analysis (no compiler required)
+    # ------------------------------------------------------------------
+    #
+    # A test-first contract is compiled while the requested future API is
+    # still missing. Roslyn -- like every mainstream compiler -- stops
+    # binding an expression once one of its sub-expressions has an error
+    # type, and suppresses the cascading diagnostics inside it. So a
+    # defect written INSIDE such an expression produces no diagnostic at
+    # all at gate time, and only appears after production implements the
+    # future API.
+    #
+    # Verified against the real toolchain: with the future method absent,
+    #
+    #     var history = svc.GetTransactionHistory();
+    #     Assert.Collection(history,
+    #         t1 => Assert.Equal("Deposit", t1.Type) && Assert.Equal(50m, t1.Amount));
+    #
+    # reports ONLY CS1061 for the missing method. Add the method and the
+    # same file reports CS0019 + CS0201 on the lambda bodies. That is the
+    # Ledger Spec 003 failure exactly, and no diagnostic-classification
+    # rule could have caught it, because there was no diagnostic.
+    #
+    # These assertion helpers return void in xUnit, NUnit and MSTest, so
+    # combining them with a boolean operator is invalid C# no matter what
+    # production code exists. Helpers that return a value (xUnit's
+    # IsType/Throws/Single/Raises) are deliberately absent: those may
+    # legitimately appear as operands.
+
+    VOID_ASSERTION_RECEIVERS = (
+        "Assert",
+        "CollectionAssert",
+        "StringAssert",
+    )
+
+    VOID_ASSERTION_METHODS = {
+        # xUnit
+        "Equal",
+        "NotEqual",
+        "StrictEqual",
+        "NotStrictEqual",
+        "True",
+        "False",
+        "Null",
+        "NotNull",
+        "Empty",
+        "NotEmpty",
+        "Same",
+        "NotSame",
+        "InRange",
+        "NotInRange",
+        "Collection",
+        "All",
+        "Subset",
+        "ProperSubset",
+        "Fail",
+        # NUnit
+        "That",
+        "Pass",
+        # MSTest
+        "AreEqual",
+        "AreNotEqual",
+        "AreSame",
+        "AreNotSame",
+        "IsTrue",
+        "IsFalse",
+        "IsNull",
+        "IsNotNull",
+    }
+
+    BOOLEAN_OPERATORS = (
+        "&&",
+        "||",
+    )
+
+    ASSERTION_CALL_PATTERN = re.compile(
+        r"\b(?P<receiver>"
+        + "|".join(VOID_ASSERTION_RECEIVERS)
+        + r")\s*\.\s*"
+        r"(?P<method>[A-Za-z_][A-Za-z0-9_]*)"
+        r"\s*(?:<[^<>()]*>\s*)?"
+        r"\("
+    )
+
+    @staticmethod
+    def _mask_literals_and_comments(source):
+        """
+        Replace the contents of string/char literals and comments with
+        spaces, preserving length and newlines so offsets and line
+        numbers stay exact. Prevents an operator inside a literal or a
+        comment from being read as code.
+        """
+
+        text = source or ""
+        out = list(text)
+
+        index = 0
+        length = len(text)
+
+        def blank(start, end):
+            for position in range(start, end):
+                if out[position] != "\n":
+                    out[position] = " "
+
+        while index < length:
+            char = text[index]
+
+            if char == "/" and index + 1 < length:
+                following = text[index + 1]
+
+                if following == "/":
+                    end = text.find("\n", index)
+                    end = length if end == -1 else end
+                    blank(index, end)
+                    index = end
+                    continue
+
+                if following == "*":
+                    end = text.find("*/", index + 2)
+                    end = length if end == -1 else end + 2
+                    blank(index, end)
+                    index = end
+                    continue
+
+            if char == "@" and index + 1 < length and text[index + 1] == '"':
+                end = index + 2
+
+                while end < length:
+                    if text[end] == '"':
+                        if end + 1 < length and text[end + 1] == '"':
+                            end += 2
+                            continue
+                        end += 1
+                        break
+                    end += 1
+
+                blank(index, min(end, length))
+                index = end
+                continue
+
+            if char in ('"', "'"):
+                end = index + 1
+
+                while end < length:
+                    if text[end] == "\\":
+                        end += 2
+                        continue
+                    if text[end] == char:
+                        end += 1
+                        break
+                    if text[end] == "\n":
+                        break
+                    end += 1
+
+                blank(index, min(end, length))
+                index = end
+                continue
+
+            index += 1
+
+        return "".join(out)
+
+    @staticmethod
+    def _matching_paren(text, open_index):
+        depth = 0
+
+        for position in range(open_index, len(text)):
+            char = text[position]
+
+            if char == "(":
+                depth += 1
+
+            elif char == ")":
+                depth -= 1
+
+                if depth == 0:
+                    return position
+
+        return None
+
+    def analyze_test_source(self, source, path=None):
+        if not source:
+            return []
+
+        masked = self._mask_literals_and_comments(
+            source
+        )
+
+        defects = []
+        seen = set()
+
+        for match in self.ASSERTION_CALL_PATTERN.finditer(
+            masked
+        ):
+            method = match.group("method")
+
+            if method not in self.VOID_ASSERTION_METHODS:
+                continue
+
+            open_index = match.end() - 1
+
+            close_index = self._matching_paren(
+                masked,
+                open_index
+            )
+
+            if close_index is None:
+                continue
+
+            call = (
+                f"{match.group('receiver')}.{method}(...)"
+            )
+
+            operator = None
+
+            after = masked[close_index + 1:].lstrip()
+
+            for candidate in self.BOOLEAN_OPERATORS:
+                if after.startswith(candidate):
+                    operator = candidate
+                    break
+
+            if operator is None:
+                before = masked[:match.start()].rstrip()
+
+                for candidate in self.BOOLEAN_OPERATORS:
+                    if before.endswith(candidate):
+                        operator = candidate
+                        break
+
+            if operator is None:
+                continue
+
+            line = masked.count(
+                "\n",
+                0,
+                match.start()
+            ) + 1
+
+            key = (line, call, operator)
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+
+            defects.append(
+                {
+                    "code": "TEST0001",
+                    "line": line,
+                    "message": (
+                        f"line {line}: {call} returns void and cannot "
+                        f"be an operand of '{operator}'."
+                    ),
+                    "reason": (
+                        "This assertion helper returns void in xUnit, "
+                        "NUnit and MSTest, so combining it with a "
+                        "boolean operator is invalid regardless of "
+                        "what production code exists. Write each "
+                        "assertion as its own statement inside a "
+                        "braced lambda body instead of chaining them "
+                        f"with '{operator}'."
+                    )
+                }
+            )
+
+        return defects
+
+    DIAGNOSTIC_LOCATION_PATTERN = re.compile(
+        r"^\s*(?P<path>[^\s(][^(]*?)"
+        r"\((?P<line>\d+),\d+\)\s*:\s*"
+        r"error\s+(?P<code>CS\d+)\s*:\s*"
+        r"(?P<message>.*)$"
+    )
+
+    def parse_diagnostic_locations(self, output):
+        located = []
+        seen = set()
+
+        for line in (output or "").splitlines():
+            match = self.DIAGNOSTIC_LOCATION_PATTERN.match(
+                line
+            )
+
+            if not match:
+                continue
+
+            message = re.sub(
+                r"\s*\[[^\]]*\.(?:cs|fs|vb)proj\]\s*$",
+                "",
+                match.group("message").strip()
+            )
+
+            entry = {
+                "path": match.group("path").strip(),
+                "line": int(match.group("line")),
+                "code": match.group("code"),
+                "message": message
+            }
+
+            key = (
+                entry["path"],
+                entry["line"],
+                entry["code"],
+                entry["message"]
+            )
+
+            if key in seen:
+                continue
+
+            seen.add(key)
+
+            located.append(entry)
+
+        return located

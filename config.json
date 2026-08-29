@@ -27,5 +27,7 @@
   "max_contract_reopens": 1,
   "challenge_reviewer_thinking": true,
   "challenge_hint_after_repeats": 3,
-  "challenge_reviewer_timeout_seconds": 900
+  "challenge_reviewer_timeout_seconds": 900,
+  "auto_escalation_after_repeats": 3,
+  "max_auto_contract_escalations": 1
 }

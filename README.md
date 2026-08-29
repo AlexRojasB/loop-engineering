@@ -115,6 +115,37 @@ can supply their own without changing the pipeline. When an adapter
 cannot classify, the contract proceeds to the existing reviewers exactly
 as before — the check only ever short-circuits on positive evidence.
 
+## Authorized future API
+
+The contract gate decides, deterministically, whether a symbol the
+compiler reports as missing is one the CURRENT specification asked for.
+That verdict is now handed to the structural reviewer, the semantic
+reviewer and the revision prompt as structured evidence:
+
+    - `Description`
+      authorized because: requested by the current specification
+      compiler evidence of current absence: CS1061: ...
+
+Reviewers are told this classification is machine evidence and that mere
+absence is not theirs to re-litigate. They may still reject the contract
+for any other defect, and a symbol the specification never asked for gets
+no protection at all -- it is still an invented API.
+
+## Intrinsic test-source defects
+
+A test-first contract is compiled while the requested future API is still
+missing, and compilers suppress cascading diagnostics inside an
+expression whose type could not be resolved. A defect written inside such
+an expression is therefore invisible at gate time and only surfaces once
+production implements the future API -- against a contract that is
+already frozen.
+
+So the harness also analyses the generated test source directly, with no
+compiler involved, through `LanguageAdapter.analyze_test_source`. The
+.NET adapter detects void-returning assertion helpers combined with a
+boolean operator. This check runs before compilation and before any model
+reviewer, and runs even when no toolchain is available.
+
 ## Frozen contract challenge
 
 Frozen tests are immutable, and the implementation agent still cannot
@@ -149,6 +180,15 @@ A deterministic stall reminder points at the procedure once the same
 failure has survived several repair rounds, so a correct diagnosis turns
 into a decision instead of being restated for the rest of the step
 budget.
+
+The harness can also raise a challenge itself. When production compiles,
+the frozen test file does not, every diagnostic is inside files the agent
+may not edit, and the same diagnostics reproduce across repair rounds,
+the harness files a `frozen_test_compilation` report on its own
+initiative -- because the implementation model cannot be relied on to do
+it. Escalation grants nothing: it consumes the same budgets and goes
+through the same independent adjudication, and two reviewers must still
+confirm. An ordinary failing assertion never escalates.
 
 Whether the configured reviewer model actually adjudicates correctly is
 measured, not assumed:
@@ -193,6 +233,21 @@ The memory is scoped to one work item (keyed by path and content hash),
 capped in both entry count and entry length, cleared when the item
 finishes, and stored outside the target repository so rollback, clean
 baseline checks and automatic commits are unaffected.
+
+Every finding records HOW it was established, and prompts present the
+tiers differently:
+
+- deterministic checks and confirmed contract challenges are stated as
+  established evidence;
+- a single reviewer's unconfirmed opinion is stated as a hypothesis to
+  re-test, because reviewers have previously "found" defects that were
+  in fact task-authorized future API;
+- transient model/service failures are stored for observability and
+  never rendered into a prompt.
+
+When memory has to be trimmed, the least authoritative entries are
+evicted first, so a burst of model opinions cannot push out the
+machine-verified finding that explains the failure.
 
 ## Safety model
 

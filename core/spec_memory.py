@@ -29,6 +29,106 @@ DEFAULT_MAX_CHARS = 240
 WHITESPACE = re.compile(r"\s+")
 
 
+# ---------------------------------------------------------------------
+# Provenance
+#
+# Ledger Full #3 showed why a flat list of "findings" is actively
+# harmful. Spec 005's reviewers wrongly rejected a task-authorized future
+# API; those false positives were written into memory as findings, fed
+# back into the next attempt's prompts, and read there as established
+# fact -- so the next reviewers repeated them almost verbatim. Memory
+# amplified an error instead of preventing one.
+#
+# The fix is not less memory, it is honest memory: every entry records
+# HOW it was established, and prompts present machine-verified evidence
+# and independently adjudicated defects differently from one model's
+# unconfirmed opinion.
+# ---------------------------------------------------------------------
+
+DETERMINISTIC_CONFIRMED = "deterministic_confirmed"
+
+CHALLENGE_CONFIRMED = "challenge_confirmed"
+
+SEMANTIC_CONFIRMATION_REJECTION = "semantic_confirmation_rejection"
+
+REVIEWER_CONCERN = "reviewer_concern"
+
+IMPLEMENTATION_OBSERVATION = "implementation_observation"
+
+TRANSIENT_MODEL_FAILURE = "transient_model_failure"
+
+
+PROVENANCE_VALUES = (
+    DETERMINISTIC_CONFIRMED,
+    CHALLENGE_CONFIRMED,
+    SEMANTIC_CONFIRMATION_REJECTION,
+    REVIEWER_CONCERN,
+    IMPLEMENTATION_OBSERVATION,
+    TRANSIENT_MODEL_FAILURE,
+)
+
+
+# Higher wins when memory has to be trimmed: a machine-verified finding
+# must never be evicted by a flood of model opinions.
+PROVENANCE_AUTHORITY = {
+    DETERMINISTIC_CONFIRMED: 5,
+    CHALLENGE_CONFIRMED: 5,
+    SEMANTIC_CONFIRMATION_REJECTION: 3,
+    REVIEWER_CONCERN: 2,
+    IMPLEMENTATION_OBSERVATION: 2,
+    TRANSIENT_MODEL_FAILURE: 0,
+}
+
+
+# Category prefix -> provenance. Categories are written by the phases as
+# "contract/<reviewer>" or a bare label; anything unrecognised is treated
+# as an unconfirmed observation rather than as evidence.
+CATEGORY_PROVENANCE = {
+    "contract/compilation": DETERMINISTIC_CONFIRMED,
+    "contract/source": DETERMINISTIC_CONFIRMED,
+    "contract/challenge_confirmed": CHALLENGE_CONFIRMED,
+    "contract/challenge_review": CHALLENGE_CONFIRMED,
+    "contract/challenge": CHALLENGE_CONFIRMED,
+    "contract/semantic_confirmation": SEMANTIC_CONFIRMATION_REJECTION,
+    "contract/structural": REVIEWER_CONCERN,
+    "contract/semantic": REVIEWER_CONCERN,
+    "contract/guard": DETERMINISTIC_CONFIRMED,
+    "implementation": IMPLEMENTATION_OBSERVATION,
+    "model": TRANSIENT_MODEL_FAILURE,
+}
+
+
+def provenance_for_category(category):
+    """
+    Best-effort provenance for a category label. Unknown categories fall
+    back to the WEAKEST interpretation that still carries signal, so a
+    new caller can never accidentally promote an opinion to evidence.
+    """
+
+    key = str(category or "").strip()
+
+    if key in CATEGORY_PROVENANCE:
+        return CATEGORY_PROVENANCE[key]
+
+    return IMPLEMENTATION_OBSERVATION
+
+
+AUTHORITATIVE_PROVENANCE = {
+    DETERMINISTIC_CONFIRMED,
+    CHALLENGE_CONFIRMED,
+}
+
+HYPOTHESIS_PROVENANCE = {
+    REVIEWER_CONCERN,
+    SEMANTIC_CONFIRMATION_REJECTION,
+}
+
+
+ENTRY_PATTERN = re.compile(
+    r"^\[(?P<category>[^\]]*)\]\s*(?P<body>.*)$"
+)
+
+
 def spec_scope_key(source_path, source_text):
     """
     Identity of one work item. Content-hashed so an edited specification
@@ -77,6 +177,86 @@ def condense(value, max_chars=DEFAULT_MAX_CHARS):
     return text[:max_chars - 3].rstrip() + "..."
 
 
+def make_entry(category, body, provenance=None):
+    return {
+        "provenance":
+            provenance
+            or provenance_for_category(
+                category
+            ),
+        "category": str(category or ""),
+        "body": str(body or "")
+    }
+
+
+def normalize_entry(entry):
+    """
+    Accept both the current structured form and the flat
+    "[category] body" strings written by earlier harness versions, so an
+    existing memory file keeps working after an upgrade.
+    """
+
+    if isinstance(entry, dict):
+        body = str(
+            entry.get("body", "")
+        ).strip()
+
+        if not body:
+            return None
+
+        category = str(
+            entry.get("category", "")
+        )
+
+        provenance = entry.get(
+            "provenance"
+        )
+
+        if provenance not in PROVENANCE_VALUES:
+            provenance = provenance_for_category(
+                category
+            )
+
+        return {
+            "provenance": provenance,
+            "category": category,
+            "body": body
+        }
+
+    text = str(entry or "").strip()
+
+    if not text:
+        return None
+
+    match = ENTRY_PATTERN.match(text)
+
+    if match:
+        return make_entry(
+            match.group("category"),
+            match.group("body").strip()
+        )
+
+    return make_entry(
+        "",
+        text,
+        IMPLEMENTATION_OBSERVATION
+    )
+
+
+def entry_key(entry):
+    return (
+        entry["category"],
+        entry["body"]
+    )
+
+
+def entry_line(entry):
+    if entry["category"]:
+        return f"[{entry['category']}] {entry['body']}"
+
+    return entry["body"]
+
+
 class SpecFailureMemory:
     """
     Append-only, de-duplicated, bounded findings for one work item.
@@ -121,11 +301,17 @@ class SpecFailureMemory:
 
                 if stored.get("scope") == scope:
                     entries = [
-                        str(entry)
+                        normalize_entry(entry)
                         for entry in stored.get(
                             "entries",
                             []
                         )
+                    ]
+
+                    entries = [
+                        entry
+                        for entry in entries
+                        if entry
                     ]
 
             except (
@@ -177,9 +363,18 @@ class SpecFailureMemory:
     def is_empty(self):
         return not self.entries
 
-    def record(self, category, details):
+    def record(
+        self,
+        category,
+        details,
+        provenance=None
+    ):
         """
         Record one or more condensed findings under `category`.
+
+        `provenance` says HOW the finding was established. Callers that
+        omit it get the provenance implied by the category, which is
+        deliberately the weakest reading for anything unrecognised.
         """
 
         if details is None:
@@ -196,6 +391,11 @@ class SpecFailureMemory:
 
         added = False
 
+        existing = {
+            entry_key(entry)
+            for entry in self.entries
+        }
+
         for item in items:
             body = condense(
                 item,
@@ -205,21 +405,60 @@ class SpecFailureMemory:
             if not body:
                 continue
 
-            entry = f"[{category}] {body}"
+            entry = make_entry(
+                category,
+                body,
+                provenance
+            )
 
-            if entry in self.entries:
+            key = entry_key(entry)
+
+            if key in existing:
                 continue
+
+            existing.add(key)
 
             self.entries.append(entry)
 
             added = True
 
-        if len(self.entries) > self.limit:
-            self.entries = self.entries[
-                -self.limit:
-            ]
+        self._trim()
 
         return added
+
+    def _trim(self):
+        """
+        Bound the memory, evicting the LEAST authoritative entries first.
+
+        A plain tail-truncation would let a burst of reviewer opinions
+        push out the machine-verified finding that actually explains the
+        failure -- which is the opposite of what memory is for.
+        """
+
+        if len(self.entries) <= self.limit:
+            return
+
+        ordered = sorted(
+            enumerate(self.entries),
+            key=lambda pair: (
+                PROVENANCE_AUTHORITY.get(
+                    pair[1]["provenance"],
+                    1
+                ),
+                pair[0]
+            ),
+            reverse=True
+        )
+
+        keep = sorted(
+            index
+            for index, _ in ordered[:self.limit]
+        )
+
+        self.entries = [
+            self.entries[index]
+            for index in keep
+        ]
 
     def clear(self):
         self.entries = []
@@ -230,18 +469,129 @@ class SpecFailureMemory:
             except OSError:
                 pass
 
+    def lines(self):
+        """
+        Flat "[category] body" rendering of every entry, in order.
+
+        Useful for assertions and logs that only care about content;
+        `as_text()` is what prompts get, because it also carries the
+        authority of each finding.
+        """
+
+        return [
+            entry_line(entry)
+            for entry in self.entries
+        ]
+
+    def entries_with_provenance(self, provenance):
+        return [
+            entry
+            for entry in self.entries
+            if entry["provenance"] == provenance
+        ]
+
     def as_text(self):
+        """
+        Render memory for a prompt, GROUPED BY HOW EACH FINDING WAS
+        ESTABLISHED.
+
+        A flat list invites a model to treat every line as settled fact.
+        In Ledger Full #3 that turned a reviewer's false positive into a
+        premise the next attempt's reviewers repeated. Machine-verified
+        evidence and independently adjudicated defects are therefore
+        stated as established; a single unconfirmed model opinion is
+        stated as a hypothesis to re-check.
+        """
+
         if not self.entries:
             return NO_MEMORY_TEXT
 
-        return "\n".join(
-            f"- {entry}"
+        confirmed = [
+            entry
             for entry in self.entries
-        )
+            if entry["provenance"]
+            in AUTHORITATIVE_PROVENANCE
+        ]
+
+        hypotheses = [
+            entry
+            for entry in self.entries
+            if entry["provenance"]
+            in HYPOTHESIS_PROVENANCE
+        ]
+
+        observations = [
+            entry
+            for entry in self.entries
+            if entry["provenance"]
+            == IMPLEMENTATION_OBSERVATION
+        ]
+
+        # Transient model/infrastructure failures are kept in the stored
+        # memory for observability but say nothing about the contract,
+        # so they are never rendered into a prompt.
+
+        blocks = []
+
+        if confirmed:
+            blocks.append(
+                CONFIRMED_HEADING
+                + "\n"
+                + "\n".join(
+                    f"- {entry_line(entry)}"
+                    for entry in confirmed
+                )
+            )
+
+        if hypotheses:
+            blocks.append(
+                HYPOTHESIS_HEADING
+                + "\n"
+                + "\n".join(
+                    f"- {entry_line(entry)}"
+                    for entry in hypotheses
+                )
+            )
+
+        if observations:
+            blocks.append(
+                OBSERVATION_HEADING
+                + "\n"
+                + "\n".join(
+                    f"- {entry_line(entry)}"
+                    for entry in observations
+                )
+            )
+
+        if not blocks:
+            return NO_MEMORY_TEXT
+
+        return "\n\n".join(blocks)
 
 
 NO_MEMORY_TEXT = (
     "(no findings from previous attempts at this work item)"
+)
+
+CONFIRMED_HEADING = (
+    "CONFIRMED EVIDENCE (machine-verified by a deterministic check, or "
+    "independently adjudicated). These describe real defects of earlier "
+    "attempts; do not reproduce them:"
+)
+
+HYPOTHESIS_HEADING = (
+    "UNCONFIRMED REVIEWER CONCERNS (one model's opinion from an earlier "
+    "attempt, never independently confirmed, and known to be wrong "
+    "sometimes -- reviewers have previously 'found' defects that were "
+    "actually task-authorized future API). Treat each as a HYPOTHESIS "
+    "to re-test from scratch against the material in front of you. Do "
+    "NOT restate one as a finding, and do NOT reject anything solely "
+    "because it appears here:"
+)
+
+OBSERVATION_HEADING = (
+    "OBSERVATIONS FROM EARLIER ATTEMPTS (context only, not evidence of "
+    "any specific defect):"
 )
 
 
@@ -257,7 +607,12 @@ def memory_from_config(config):
     )
 
 
-def record_spec_failure(config, category, details):
+def record_spec_failure(
+    config,
+    category,
+    details,
+    provenance=None
+):
     memory = memory_from_config(
         config
     )
@@ -269,7 +624,8 @@ def record_spec_failure(config, category, details):
 
     added = memory.record(
         category,
-        details
+        details,
+        provenance
     )
 
     if added:

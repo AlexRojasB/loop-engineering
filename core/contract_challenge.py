@@ -49,21 +49,36 @@ from core.state import append_history
 # Schema
 # ---------------------------------------------------------------------
 
+# `frozen_test_compilation` is the harness-raisable kind: the frozen test
+# file does not COMPILE, and the implementation agent may not legally
+# edit it. Its evidence is compiler diagnostics attributed to frozen test
+# files rather than a quote from production, so it takes a different --
+# and strictly more deterministic -- path through the evidence gate.
+FROZEN_TEST_COMPILATION = "frozen_test_compilation"
+
 CHALLENGE_KINDS = (
     "spec_contradiction",
     "production_behavior",
     "object_identity",
     "api_semantics",
     "invariant",
+    FROZEN_TEST_COMPILATION,
 )
 
 REQUIRED_TEXT_FIELDS = (
     "summary",
     "contradiction",
     "authoritative_requirement",
+)
+
+# Required for every kind whose claim is about production BEHAVIOR. A
+# compile failure of the frozen test file is not such a claim.
+PRODUCTION_EVIDENCE_FIELDS = (
     "production_path",
     "production_quote",
 )
+
+MAX_DIAGNOSTICS = 8
 
 MAX_FIELD_CHARS = 800
 
@@ -172,7 +187,14 @@ def normalize_challenge(args):
         "failing_tests": failing_tests,
     }
 
-    for field in REQUIRED_TEXT_FIELDS:
+    required = list(REQUIRED_TEXT_FIELDS)
+
+    if kind != FROZEN_TEST_COMPILATION:
+        required.extend(
+            PRODUCTION_EVIDENCE_FIELDS
+        )
+
+    for field in required:
         challenge[field] = _clip(
             args.get(field)
         )
@@ -182,6 +204,43 @@ def normalize_challenge(args):
                 None,
                 f"CHALLENGE REJECTED: '{field}' is required."
             )
+
+    for field in PRODUCTION_EVIDENCE_FIELDS:
+        challenge.setdefault(
+            field,
+            _clip(
+                args.get(field)
+            )
+        )
+
+    if kind == FROZEN_TEST_COMPILATION:
+        raw_diagnostics = args.get(
+            "diagnostics"
+        )
+
+        if isinstance(raw_diagnostics, str):
+            raw_diagnostics = [raw_diagnostics]
+
+        diagnostics = []
+
+        for item in (raw_diagnostics or []):
+            value = _clip(item)
+
+            if value and value not in diagnostics:
+                diagnostics.append(value)
+
+        if not diagnostics:
+            return (
+                None,
+                "CHALLENGE REJECTED: a "
+                f"'{FROZEN_TEST_COMPILATION}' report must list the "
+                "compiler diagnostics raised against the frozen test "
+                "file."
+            )
+
+        challenge["diagnostics"] = diagnostics[
+            :MAX_DIAGNOSTICS
+        ]
 
     if len(
         challenge["contradiction"]
@@ -194,9 +253,12 @@ def normalize_challenge(args):
             "test(s)."
         )
 
-    if len(
-        challenge["production_quote"]
-    ) < MIN_QUOTE_CHARS:
+    if (
+        kind != FROZEN_TEST_COMPILATION
+        and len(
+            challenge["production_quote"]
+        ) < MIN_QUOTE_CHARS
+    ):
         return (
             None,
             "CHALLENGE REJECTED: 'production_quote' must be a literal "
@@ -234,20 +296,38 @@ def challenge_fingerprint(challenge):
 
 
 def format_challenge(challenge):
-    return (
-        f"kind: {challenge['kind']}\n"
-        f"failing tests: "
+    lines = [
+        f"kind: {challenge['kind']}",
+        "failing tests: "
         + ", ".join(
             challenge["failing_tests"]
+        ),
+        f"summary: {challenge['summary']}",
+        "authoritative requirement: "
+        f"{challenge['authoritative_requirement']}",
+    ]
+
+    if challenge.get("diagnostics"):
+        lines.append(
+            "compiler diagnostics against the frozen test file:\n"
+            + "\n".join(
+                f"  {item}"
+                for item in challenge["diagnostics"]
+            )
         )
-        + f"\nsummary: {challenge['summary']}\n"
-        f"authoritative requirement: "
-        f"{challenge['authoritative_requirement']}\n"
-        f"production evidence "
-        f"({challenge['production_path']}): "
-        f"{challenge['production_quote']}\n"
+
+    if challenge.get("production_path"):
+        lines.append(
+            "production evidence "
+            f"({challenge['production_path']}): "
+            f"{challenge.get('production_quote', '')}"
+        )
+
+    lines.append(
         f"contradiction: {challenge['contradiction']}"
     )
+
+    return "\n".join(lines)
 
 
 def challenge_memory_entry(challenge):
@@ -301,6 +381,187 @@ def _frozen_contract_text(frozen_tests):
         str(content)
         for content in frozen_tests.values()
     )
+
+
+def frozen_test_paths(frozen_tests):
+    return [
+        str(path)
+        for path in (frozen_tests or {}).keys()
+    ]
+
+
+def attribute_diagnostics(
+    adapter,
+    output,
+    frozen_tests
+):
+    """
+    Split file-attributed compiler diagnostics into those raised against
+    FROZEN TEST files and those raised anywhere else.
+
+    Returns (frozen, other, located). `located` is empty when the
+    adapter cannot attribute diagnostics at all, which callers must
+    treat as insufficient evidence rather than as "no other errors".
+    """
+
+    try:
+        located = adapter.parse_diagnostic_locations(
+            output
+        )
+
+    except Exception:
+        located = []
+
+    if not located:
+        return [], [], []
+
+    paths = frozen_test_paths(
+        frozen_tests
+    )
+
+    frozen = []
+    other = []
+
+    for entry in located:
+        raw = str(
+            entry.get("path", "")
+        ).replace("\\", "/")
+
+        if any(
+            raw.endswith(path)
+            or raw.endswith("/" + path)
+            for path in paths
+        ):
+            frozen.append(entry)
+
+        else:
+            other.append(entry)
+
+    return frozen, other, located
+
+
+def frozen_test_compilation_evidence(
+    workspace,
+    challenge,
+    frozen_tests,
+    adapter,
+    repository_files,
+    runner=None
+):
+    """
+    Deterministic evidence path for a `frozen_test_compilation` report.
+
+    The claim is narrow and machine-checkable: the frozen test file does
+    not compile, and every compiler diagnostic is attributable to frozen
+    test files -- not to production code the agent is allowed to fix.
+    That is strictly stronger evidence than a failing assertion, so it
+    does NOT require the project to build (it cannot) and does not
+    require the output to name a test (compilers name files).
+
+    Fails closed at every step: no adapter attribution, any diagnostic
+    outside the frozen tests, or a build that now succeeds all mean "not
+    admissible".
+    """
+
+    execute = runner or run_argv
+
+    argv = None
+
+    try:
+        argv = adapter.build_argv(
+            repository_files
+        )
+
+    except Exception:
+        argv = None
+
+    if not argv:
+        return {
+            "ok": False,
+            "reason":
+                "This project's language adapter cannot run a build, "
+                "so a compilation claim cannot be verified.",
+            "output": ""
+        }
+
+    try:
+        result = execute(
+            workspace,
+            argv
+        )
+
+    except Exception as exc:
+        return {
+            "ok": False,
+            "reason":
+                "The build could not be executed "
+                f"({type(exc).__name__}: {exc}).",
+            "output": ""
+        }
+
+    output = _bounded(
+        result.get("output")
+    )
+
+    if result.get("exit_code") == 0:
+        return {
+            "ok": False,
+            "reason":
+                "The project now builds. There is no frozen-test "
+                "compilation failure to challenge.",
+            "output": output
+        }
+
+    frozen, other, located = attribute_diagnostics(
+        adapter,
+        result.get("output"),
+        frozen_tests
+    )
+
+    if not located:
+        return {
+            "ok": False,
+            "reason":
+                "The build failed but its diagnostics could not be "
+                "attributed to specific files, so the failure cannot "
+                "be pinned on the frozen contract.",
+            "output": output
+        }
+
+    if not frozen:
+        return {
+            "ok": False,
+            "reason":
+                "The build failure is not in the frozen test files.",
+            "output": output
+        }
+
+    if other:
+        return {
+            "ok": False,
+            "reason":
+                "The build also fails in files you are allowed to "
+                "change ("
+                + ", ".join(
+                    sorted(
+                        {
+                            entry["path"]
+                            for entry in other
+                        }
+                    )[:3]
+                )
+                + "). Fix those first: while production does not "
+                "compile, the frozen contract cannot be blamed.",
+            "output": output
+        }
+
+    return {
+        "ok": True,
+        "reason": None,
+        "output": output,
+        "cited_content": None,
+        "frozen_diagnostics": frozen
+    }
 
 
 def evidence_gate(
@@ -363,6 +624,16 @@ def evidence_gate(
                 "file.",
             "output": ""
         }
+
+    if challenge["kind"] == FROZEN_TEST_COMPILATION:
+        return frozen_test_compilation_evidence(
+            workspace,
+            challenge,
+            frozen_tests,
+            adapter,
+            repository_files,
+            runner=runner
+        )
 
     cited_path = challenge[
         "production_path"

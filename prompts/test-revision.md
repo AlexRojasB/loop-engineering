@@ -49,3 +49,29 @@ Do not access private production members directly.
 
 No Markdown.
 No explanation.
+
+# Deterministically Authorized Future API
+
+{authorized_future_contract}
+
+The harness already COMPILED this contract and matched each symbol above
+against the current authoritative task. That classification is
+deterministic machine evidence, not an opinion, and it is not yours to
+re-litigate.
+
+For every symbol listed above:
+
+- its absence from current production is EXPECTED and PROVEN;
+- "this member does not exist", "this overload does not exist", "this
+  property is not on that class", "this parameter is not in the current
+  signature" are NOT defects and MUST NOT appear in your issues;
+- treat it as if it already existed with the shape the task describes,
+  and review the SEMANTICS of how the contract uses it.
+
+A symbol that is NOT listed above gets no such protection. If the
+contract references something the task does not ask for, that is an
+invented API and you should reject it.
+
+You may still reject this contract for any other defect: wrong Arrange,
+unreachable state, contradictory assertion, identity/provenance error,
+invented behavior, or an expected result that contradicts the task.

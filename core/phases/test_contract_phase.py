@@ -3,8 +3,14 @@ import json
 import re
 
 from core.context import implementation_text
+from core.authorized_future import (
+    NO_AUTHORIZED_FUTURE,
+    authorized_future_entries,
+    format_authorized_future,
+)
 from core.contract_validation import (
     adapter_supports_validation,
+    analyze_candidate_test_source,
     validate_candidate_contract,
 )
 from core.guards import (
@@ -188,7 +194,8 @@ def test_snippet_revision_prompt(
     snippet,
     issues,
     prior_issues=None,
-    prior_spec_failures=None
+    prior_spec_failures=None,
+    authorized_future=None
 ):
     return render_prompt(
         "test-revision.md",
@@ -207,7 +214,10 @@ def test_snippet_revision_prompt(
         ),
         prior_spec_failures=
             prior_spec_failures
-            or NO_SPEC_MEMORY
+            or NO_SPEC_MEMORY,
+        authorized_future_contract=
+            authorized_future
+            or NO_AUTHORIZED_FUTURE
     )
 
 
@@ -216,7 +226,8 @@ def test_review_prompt(
     implementation_files,
     merged_test_content,
     prior_issues=None,
-    prior_spec_failures=None
+    prior_spec_failures=None,
+    authorized_future=None
 ):
     return render_prompt(
         "test-reviewer.md",
@@ -230,7 +241,10 @@ def test_review_prompt(
         ),
         prior_spec_failures=
             prior_spec_failures
-            or NO_SPEC_MEMORY
+            or NO_SPEC_MEMORY,
+        authorized_future_contract=
+            authorized_future
+            or NO_AUTHORIZED_FUTURE
     )
 
 
@@ -239,7 +253,8 @@ def semantic_test_review_prompt(
     implementation_files,
     merged_test_content,
     prior_issues=None,
-    prior_spec_failures=None
+    prior_spec_failures=None,
+    authorized_future=None
 ):
     return render_prompt(
         "test-semantic-reviewer.md",
@@ -253,7 +268,10 @@ def semantic_test_review_prompt(
         ),
         prior_spec_failures=
             prior_spec_failures
-            or NO_SPEC_MEMORY
+            or NO_SPEC_MEMORY,
+        authorized_future_contract=
+            authorized_future
+            or NO_AUTHORIZED_FUTURE
     )
 
 
@@ -307,6 +325,16 @@ def _resolve_reviewer_verdict(
     )
 
     if not review["ok"]:
+        # Recorded as an explicitly TRANSIENT finding: it says something
+        # about the model service, nothing about the contract, so it
+        # must never be presented to a later attempt as a defect.
+        record_spec_failure(
+            config,
+            "model",
+            f"{reviewer_label} reviewer call failed: "
+            f"{review.get('error')}"
+        )
+
         return {"status": "call_failed"}
 
     if review.get("thinking"):
@@ -323,6 +351,13 @@ def _resolve_reviewer_verdict(
         )
 
     if review.get("truncated"):
+        record_spec_failure(
+            config,
+            "model",
+            f"{reviewer_label} reviewer verdict was truncated "
+            f"(done_reason={review.get('done_reason')})."
+        )
+
         print(
             "REVIEWER OUTPUT TRUNCATED "
             f"(done_reason={review.get('done_reason')}): "
@@ -471,7 +506,8 @@ def deterministic_contract_gate(
     adapter,
     repository_files,
     attempt,
-    runner=None
+    runner=None,
+    outcome=None
 ):
     """
     Cheap, deterministic pre-freeze check.
@@ -489,6 +525,9 @@ def deterministic_contract_gate(
     unavailable, the contract proceeds to the existing reviewers exactly
     as before. This adds a check; it never removes one.
     """
+
+    if outcome is not None:
+        outcome.clear()
 
     if not config.get(
         "contract_compilation_check",
@@ -517,6 +556,14 @@ def deterministic_contract_gate(
 
     if not result.get("supported"):
         return True, []
+
+    if outcome is not None:
+        # The classification is deterministic evidence. Hand it back so
+        # the caller can tell the model reviewers WHICH absent symbols
+        # the current specification already authorizes, instead of
+        # making them re-derive that from prose.
+        outcome["verdict"] = result["verdict"]
+        outcome["report"] = result.get("report")
 
     append_history(
         config,
@@ -689,6 +736,11 @@ def run_test_contract_phase(
         # prior issues is load-bearing convergence behaviour.
         rejected_fingerprints = set()
 
+        # Deterministic evidence from the compilation gate about which
+        # absent symbols the CURRENT specification authorizes. Refreshed
+        # every attempt and handed to the revision/review prompts.
+        authorized_future = NO_AUTHORIZED_FUTURE
+
         def revise(issues_for_this_revision):
             revision = call_model(
                 config,
@@ -703,7 +755,9 @@ def run_test_contract_phase(
                     issues_for_this_revision,
                     prior_issues=rejection_memory,
                     prior_spec_failures=
-                        prior_spec_failures
+                        prior_spec_failures,
+                    authorized_future=
+                        authorized_future
                 )
             )
 
@@ -806,6 +860,52 @@ def run_test_contract_phase(
 
                 continue
 
+            # Compiler-free check for defects intrinsic to the test
+            # code. Runs BEFORE compilation because the compiler cannot
+            # be trusted to reveal them: while the requested future API
+            # is still missing, diagnostics inside an unresolved
+            # expression are suppressed, so an invalid construct there
+            # is invisible until production implements the API -- i.e.
+            # after the contract is frozen.
+            source_ok, source_issues = (
+                analyze_candidate_test_source(
+                    adapter,
+                    merged,
+                    path
+                )
+            )
+
+            if not source_ok:
+                print()
+                print(
+                    "TEST SOURCE CHECK: REJECT"
+                )
+
+                for issue in source_issues:
+                    print(f"- {issue}")
+
+                append_history(
+                    config,
+                    "contract_source_rejected",
+                    {
+                        "file": path,
+                        "attempt": attempt,
+                        "issues": source_issues
+                    }
+                )
+
+                rejection_memory.append(
+                    {
+                        "attempt": attempt,
+                        "reviewer": "source",
+                        "issues": source_issues
+                    }
+                )
+
+                snippet = revise(source_issues)
+
+                continue
+
             fingerprint = snippet_fingerprint(
                 snippet
             )
@@ -828,6 +928,8 @@ def run_test_contract_phase(
 
                 continue
 
+            gate_outcome = {}
+
             gate_ok, gate_issues = (
                 deterministic_contract_gate(
                     config,
@@ -838,9 +940,31 @@ def run_test_contract_phase(
                     adapter,
                     repository_files,
                     attempt,
-                    runner=contract_runner
+                    runner=contract_runner,
+                    outcome=gate_outcome
                 )
             )
+
+            authorized_entries = (
+                authorized_future_entries(
+                    gate_outcome.get("report")
+                )
+            )
+
+            authorized_future = (
+                format_authorized_future(
+                    authorized_entries
+                )
+            )
+
+            if authorized_entries:
+                print(
+                    "TASK-AUTHORIZED FUTURE API: "
+                    + ", ".join(
+                        entry["symbol"]
+                        for entry in authorized_entries
+                    )
+                )
 
             if not gate_ok:
                 rejected_fingerprints.add(
@@ -868,7 +992,9 @@ def run_test_contract_phase(
                     merged,
                     prior_issues=rejection_memory,
                     prior_spec_failures=
-                        prior_spec_failures
+                        prior_spec_failures,
+                    authorized_future=
+                        authorized_future
                 ),
                 "structural",
                 path,
@@ -924,7 +1050,9 @@ def run_test_contract_phase(
                     merged,
                     prior_issues=rejection_memory,
                     prior_spec_failures=
-                        prior_spec_failures
+                        prior_spec_failures,
+                    authorized_future=
+                        authorized_future
                 ),
                 "semantic",
                 path,
@@ -983,7 +1111,9 @@ def run_test_contract_phase(
                     merged,
                     prior_issues=rejection_memory,
                     prior_spec_failures=
-                        prior_spec_failures
+                        prior_spec_failures,
+                    authorized_future=
+                        authorized_future
                 ),
                 "semantic_confirmation",
                 path,

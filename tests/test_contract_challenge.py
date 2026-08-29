@@ -49,6 +49,7 @@ if str(REPO_ROOT) not in sys.path:
 from core import contract_challenge  # noqa: E402
 from core.contract_challenge import (  # noqa: E402
     CHALLENGE_KINDS,
+    FROZEN_TEST_COMPILATION,
     MAX_FIELD_CHARS,
     challenge_fingerprint,
     challenge_memory_entry,
@@ -377,7 +378,13 @@ class ChallengeSchemaTests(unittest.TestCase):
         self.assertIsNone(challenge)
         self.assertIn("kind", error)
 
+        # `frozen_test_compilation` carries compiler diagnostics
+        # instead of a production quote, so it has its own required
+        # fields and its own coverage below.
         for kind in CHALLENGE_KINDS:
+            if kind == FROZEN_TEST_COMPILATION:
+                continue
+
             _, error = normalize_challenge(
                 challenge_args(kind=kind)
             )
@@ -1393,7 +1400,7 @@ class ImplementationPhaseChallengeTests(WorkspaceCase):
             impl.CONTRACT_CHALLENGED
         )
 
-        joined = "\n".join(memory.entries)
+        joined = "\n".join(memory.lines())
 
         self.assertIn(
             "contract/challenge_confirmed",
@@ -2316,7 +2323,7 @@ class PipelineReopenTests(unittest.TestCase):
         )
 
         joined = "\n".join(
-            result["memory"].entries
+            result["memory"].lines()
         )
 
         self.assertIn(

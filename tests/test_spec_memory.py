@@ -270,7 +270,7 @@ class BoundednessTests(unittest.TestCase):
             "word " * 5000
         )
 
-        entry = memory.entries[0]
+        entry = memory.lines()[0]
 
         self.assertLess(
             len(entry),

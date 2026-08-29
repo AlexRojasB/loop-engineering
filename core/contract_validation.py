@@ -140,3 +140,75 @@ def validate_candidate_contract(
         "report": report,
         "output": output
     }
+
+
+def adapter_supports_source_analysis(adapter):
+    if adapter is None:
+        return False
+
+    hook = getattr(
+        adapter,
+        "analyze_test_source",
+        None
+    )
+
+    return callable(hook)
+
+
+def analyze_candidate_test_source(
+    adapter,
+    source,
+    path=None
+):
+    """
+    Compiler-free check for defects INTRINSIC to the generated test code.
+
+    This is a separate gate from compilation on purpose. A test-first
+    contract is compiled while the requested future API is still absent,
+    and compilers suppress cascading diagnostics inside an expression
+    whose type could not be resolved. A defect written inside such an
+    expression therefore produces NO diagnostic at gate time and first
+    appears once production implements the future API -- by which point
+    the contract is frozen and the implementation agent cannot legally
+    fix it. That is precisely how Ledger Spec 003 lost ~1117s.
+
+    Because it needs no toolchain, this runs even when compilation
+    checking is disabled or the build cannot be executed.
+
+    Returns (ok, issues). Fails OPEN: an adapter without the hook, or a
+    hook that raises, yields (True, []).
+    """
+
+    if not adapter_supports_source_analysis(
+        adapter
+    ):
+        return True, []
+
+    try:
+        defects = adapter.analyze_test_source(
+            source,
+            path
+        )
+
+    except Exception:
+        return True, []
+
+    if not defects:
+        return True, []
+
+    issues = []
+
+    for defect in defects:
+        if not isinstance(defect, dict):
+            continue
+
+        issues.append(
+            f"{defect.get('code', 'TEST')}: "
+            f"{defect.get('message', '')} "
+            f"{defect.get('reason', '')}".strip()
+        )
+
+    if not issues:
+        return True, []
+
+    return False, issues

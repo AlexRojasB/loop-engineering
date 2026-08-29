@@ -24,6 +24,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from core.authorized_future import (  # noqa: E402
+    NO_AUTHORIZED_FUTURE,
+    format_authorized_future,
+)
 from core.prompts import load_prompt, render_prompt  # noqa: E402
 from core.spec_memory import NO_MEMORY_TEXT  # noqa: E402
 
@@ -100,7 +104,8 @@ class SemanticReviewerPromptTests(unittest.TestCase):
             production=LEDGER_PRODUCTION,
             tests=LEDGER_BAD_SNIPPET_QUANTITATIVE_CONTRADICTION,
             prior_issues="(none raised yet in this Test Contract run)",
-            prior_spec_failures=NO_MEMORY_TEXT
+            prior_spec_failures=NO_MEMORY_TEXT,
+            authorized_future_contract=NO_AUTHORIZED_FUTURE
         )
 
         self.assertIn(LEDGER_TASK, rendered)
@@ -176,7 +181,8 @@ class StructuralReviewerPromptTests(unittest.TestCase):
             production=WIDGET_PRODUCTION,
             tests=WIDGET_BAD_SNIPPET_FRESH_INSTANCE_GUARD,
             prior_issues="(none raised yet in this Test Contract run)",
-            prior_spec_failures=NO_MEMORY_TEXT
+            prior_spec_failures=NO_MEMORY_TEXT,
+            authorized_future_contract=NO_AUTHORIZED_FUTURE
         )
 
         self.assertIn(WIDGET_TASK, rendered)
@@ -224,7 +230,8 @@ class StructuralReviewerPromptTests(unittest.TestCase):
             production=WIDGET_PRODUCTION,
             tests=WIDGET_BAD_SNIPPET_FRESH_INSTANCE_GUARD,
             prior_issues="(none raised yet in this Test Contract run)",
-            prior_spec_failures=NO_MEMORY_TEXT
+            prior_spec_failures=NO_MEMORY_TEXT,
+            authorized_future_contract=NO_AUTHORIZED_FUTURE
         )
 
         self.assertIn("Object Identity And Provenance", rendered)

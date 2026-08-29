@@ -7,12 +7,15 @@ from pathlib import Path
 from core.contract_challenge import (
     CHALLENGE_KINDS,
     DEFAULT_MAX_CHALLENGES,
+    FROZEN_TEST_COMPILATION,
+    attribute_diagnostics,
     challenge_fingerprint,
     challenge_memory_entry,
     format_challenge,
     normalize_challenge,
     validate_challenge,
 )
+from core.guards import extract_test_method_names
 from core.isolation import WorkIsolation
 from core.repository import read_file, run_argv
 from core.spec_memory import record_spec_failure
@@ -43,6 +46,17 @@ DEFAULT_MAX_CHALLENGE_SUBMISSIONS = 4
 DEFAULT_CHALLENGE_HINT_AFTER_REPEATS = 3
 
 MAX_CHALLENGE_HINTS = 2
+
+# How many times the SAME frozen-test compile failure must reproduce
+# before the harness raises the dispute itself. The implementation model
+# in Ledger Full #3 diagnosed a broken frozen contract correctly and
+# repeatedly, and never once called the tool; the escape hatch cannot
+# depend on a 4B model choosing to use it.
+DEFAULT_AUTO_ESCALATION_AFTER_REPEATS = 3
+
+DEFAULT_MAX_AUTO_ESCALATIONS = 1
+
+MAX_ESCALATION_TESTS = 5
 
 CHALLENGE_TOOL = "report_contract_issue"
 
@@ -818,7 +832,9 @@ class ChallengeController:
         max_submissions,
         max_reviews,
         runner=None,
-        hint_after_repeats=DEFAULT_CHALLENGE_HINT_AFTER_REPEATS
+        hint_after_repeats=DEFAULT_CHALLENGE_HINT_AFTER_REPEATS,
+        auto_after_repeats=DEFAULT_AUTO_ESCALATION_AFTER_REPEATS,
+        max_auto_escalations=DEFAULT_MAX_AUTO_ESCALATIONS
     ):
         self.config = config
         self.workspace = workspace
@@ -846,6 +862,18 @@ class ChallengeController:
         self.last_signature = None
         self.repeat_count = 0
 
+        self.auto_after_repeats = auto_after_repeats
+        self.max_auto_escalations = max_auto_escalations
+        self.auto_escalations = 0
+
+        # Evidence for harness-raised escalation: the most recent
+        # compiler diagnostics that landed exclusively inside frozen
+        # test files, plus how many consecutive times that same set
+        # reproduced.
+        self.frozen_diagnostics = []
+        self.frozen_signature = None
+        self.frozen_repeats = 0
+
     # -- prerequisites -------------------------------------------------
 
     def note_write(self, result):
@@ -854,12 +882,75 @@ class ChallengeController:
         ):
             self.wrote_production = True
 
+    def note_build_output(self, result):
+        """
+        Track compiler diagnostics that land EXCLUSIVELY inside frozen
+        test files.
+
+        This is the deterministic half of automatic escalation. A frozen
+        test file that does not compile cannot be repaired by the
+        implementation agent -- it is forbidden from editing it -- so a
+        failure of this exact shape, reproducing across repair rounds
+        while production itself compiles clean, is strong evidence the
+        contract rather than the implementation is at fault.
+        """
+
+        if (
+            not isinstance(result, str)
+            or not result.startswith("exit_code=")
+            or result.startswith("exit_code=0")
+            or not self.frozen_tests
+        ):
+            self._reset_frozen_evidence()
+            return
+
+        frozen, other, located = attribute_diagnostics(
+            self.adapter,
+            result,
+            self.frozen_tests
+        )
+
+        # Anything unattributable, anything failing in a file the agent
+        # MAY edit, or nothing in the frozen tests: not our evidence.
+        if not located or other or not frozen:
+            self._reset_frozen_evidence()
+            return
+
+        signature = _failure_signature(
+            "\n".join(
+                sorted(
+                    f"{entry['code']} {entry['message']}"
+                    for entry in frozen
+                )
+            )
+        )
+
+        if signature == self.frozen_signature:
+            self.frozen_repeats += 1
+
+        else:
+            self.frozen_signature = signature
+            self.frozen_repeats = 1
+
+        self.frozen_diagnostics = frozen
+
+    def _reset_frozen_evidence(self):
+        self.frozen_diagnostics = []
+        self.frozen_signature = None
+        self.frozen_repeats = 0
+
     def note_operation(self, operation, result=None):
+        if operation == "build":
+            self.note_build_output(result)
+            return
+
         if operation not in (
             "test",
             "test_filtered",
         ):
             return
+
+        self.note_build_output(result)
 
         # `_run_operation` answers "OPERATION REJECTED: ..." without
         # executing anything. Only a real invocation -- which always
@@ -923,6 +1014,155 @@ class ChallengeController:
             "same diagnosis again without acting on it."
         )
 
+    # -- harness-raised escalation -------------------------------------
+
+    def _escalation_tests(self):
+        """
+        Test names from the frozen files the diagnostics landed in.
+
+        Cited so the evidence gate can verify they really belong to the
+        frozen contract. Returns [] when none can be determined, which
+        blocks escalation: the harness never files a report it cannot
+        substantiate.
+        """
+
+        affected = set()
+
+        for entry in self.frozen_diagnostics:
+            raw = str(
+                entry.get("path", "")
+            ).replace("\\", "/")
+
+            for path in self.frozen_tests:
+                if (
+                    raw.endswith(path)
+                    or raw.endswith("/" + path)
+                ):
+                    affected.add(path)
+
+        names = []
+
+        for path in sorted(affected):
+            for name in extract_test_method_names(
+                self.frozen_tests.get(path, "")
+            ):
+                if name not in names:
+                    names.append(name)
+
+        return names[:MAX_ESCALATION_TESTS]
+
+    def auto_escalation(self):
+        """
+        Build a `frozen_test_compilation` report on the harness's own
+        initiative, or return None.
+
+        Every condition is deterministic and must hold together:
+
+        1. the agent has already written production code, so this is not
+           "I have not started yet";
+        2. the last build/test run failed with compiler diagnostics;
+        3. every one of those diagnostics is inside a frozen test file,
+           and none is in a file the agent is allowed to fix;
+        4. that identical diagnostic set has now reproduced
+           `auto_after_repeats` times, so it is not a transient state
+           mid-edit;
+        5. the escalation, submission and review budgets all allow it.
+
+        Filing it changes nothing by itself: it enters the SAME
+        independent adjudication as a model-filed report, and two
+        reviewers must still confirm.
+        """
+
+        if (
+            self.auto_escalations >= self.max_auto_escalations
+            or self.submissions >= self.max_submissions
+            or self.reviews >= self.max_reviews
+            or not self.wrote_production
+            or not self.frozen_diagnostics
+            or self.frozen_repeats < self.auto_after_repeats
+        ):
+            return None
+
+        failing_tests = self._escalation_tests()
+
+        if not failing_tests:
+            return None
+
+        diagnostics = [
+            f"{entry.get('path')}({entry.get('line')}): "
+            f"{entry.get('code')}: {entry.get('message')}"
+            for entry in self.frozen_diagnostics
+        ]
+
+        return {
+            "kind": FROZEN_TEST_COMPILATION,
+            "summary":
+                "The frozen test file does not compile, and every "
+                "compiler error is inside it.",
+            "failing_tests": failing_tests,
+            "authoritative_requirement":
+                "The implementation must satisfy the frozen test "
+                "contract for: "
+                + " ".join(
+                    str(self.task or "").split()
+                )[:400],
+            "contradiction":
+                "The build fails only inside the frozen test file, "
+                "which the implementation agent is forbidden to "
+                "modify. Production code compiles clean, so no "
+                "permitted change to production can remove these "
+                "errors: they are defects in the test contract "
+                "itself. The identical diagnostics reproduced "
+                f"{self.frozen_repeats} times across repair rounds.",
+            "diagnostics": diagnostics
+        }
+
+    def escalate(self):
+        """
+        Run a harness-raised escalation through the ordinary validation
+        path. Returns (message, outcome) exactly like `handle()`, or
+        (None, None) when no escalation is warranted.
+        """
+
+        args = self.auto_escalation()
+
+        if args is None:
+            return None, None
+
+        self.auto_escalations += 1
+
+        print()
+        print("=" * 60)
+        print(
+            "HARNESS-RAISED CONTRACT CHALLENGE "
+            f"({self.auto_escalations}/"
+            f"{self.max_auto_escalations})"
+        )
+        print("=" * 60)
+        print(
+            "The frozen test file has failed to compile "
+            f"{self.frozen_repeats} times with identical errors, all "
+            "inside files the implementation agent may not edit."
+        )
+
+        append_history(
+            self.config,
+            "contract_challenge_auto_escalated",
+            {
+                "repeats": self.frozen_repeats,
+                "diagnostics": args["diagnostics"]
+            }
+        )
+
+        # Reset the evidence so a rejected escalation cannot immediately
+        # re-fire on the same observation.
+        self._reset_frozen_evidence()
+
+        return self.handle(
+            args,
+            origin="harness"
+        )
+
     # -- submission ----------------------------------------------------
 
     def _budget_message(self):
@@ -932,10 +1172,15 @@ class ChallengeController:
             "Continue implementing against it, or stop."
         )
 
-    def handle(self, args):
+    def handle(self, args, origin="agent"):
         """
         Returns (tool_result_text, outcome_or_None). A non-None outcome
         means the implementation loop must stop immediately.
+
+        `origin` records who raised the report. A harness-raised
+        escalation takes exactly the same route -- same budgets, same
+        fingerprints, same independent adjudication -- so nothing about
+        its handling is privileged.
         """
 
         if self.submissions >= self.max_submissions:
@@ -1002,11 +1247,12 @@ class ChallengeController:
             "contract_challenge_filed",
             {
                 "submission": self.submissions,
+                "origin": origin,
                 "challenge": challenge
             }
         )
 
-        if not (
+        if origin == "agent" and not (
             self.wrote_production
             and self.ran_tests
         ):
@@ -1108,7 +1354,8 @@ class ChallengeController:
 def _validate_final_state(
     root,
     adapter,
-    repository_files
+    repository_files,
+    challenges=None
 ):
     print()
     print(
@@ -1128,6 +1375,12 @@ def _validate_final_state(
     print("AGENTIC FINAL BUILD:")
     print(build)
 
+    if challenges is not None:
+        # The harness's own build counts as evidence too: an agent that
+        # gives up in front of a broken frozen contract stops calling
+        # tools, so this may be the last observation available.
+        challenges.note_build_output(build)
+
     if not build.startswith(
         "exit_code=0"
     ):
@@ -1143,6 +1396,9 @@ def _validate_final_state(
     print()
     print("AGENTIC FINAL TESTS:")
     print(tests)
+
+    if challenges is not None:
+        challenges.note_build_output(tests)
 
     return tests.startswith(
         "exit_code=0"
@@ -1272,6 +1528,18 @@ def run_agentic_implementation_phase(
                 config.get(
                     "challenge_hint_after_repeats",
                     DEFAULT_CHALLENGE_HINT_AFTER_REPEATS
+                )
+            ),
+            auto_after_repeats=int(
+                config.get(
+                    "auto_escalation_after_repeats",
+                    DEFAULT_AUTO_ESCALATION_AFTER_REPEATS
+                )
+            ),
+            max_auto_escalations=int(
+                config.get(
+                    "max_auto_contract_escalations",
+                    DEFAULT_MAX_AUTO_ESCALATIONS
                 )
             )
         )
@@ -1472,7 +1740,8 @@ Work until both the required build and test commands succeed.
                 _validate_final_state(
                     root,
                     adapter,
-                    repository_files
+                    repository_files,
+                    challenges
                 )
             )
 
@@ -1505,6 +1774,52 @@ Work until both the required build and test commands succeed.
                 "Agent stopped before "
                 "reaching GREEN."
             )
+
+            if challenges is not None:
+                # Last chance: the agent gave up, but the harness may
+                # hold deterministic evidence that the frozen contract
+                # -- not the implementation -- is what is broken.
+                escalation_result, outcome = (
+                    challenges.escalate()
+                )
+
+                if escalation_result:
+                    print()
+                    print("ESCALATION RESULT:")
+                    print(escalation_result)
+
+                if outcome is not None:
+                    record_spec_failure(
+                        config,
+                        "contract/challenge_confirmed",
+                        challenge_memory_entry(
+                            outcome["challenge"]
+                        )
+                    )
+
+                    append_history(
+                        config,
+                        "contract_challenge_confirmed",
+                        {
+                            "steps": step,
+                            "origin": "harness",
+                            "challenge":
+                                outcome["challenge"]
+                        }
+                    )
+
+                    state[
+                        "contract_challenge"
+                    ] = outcome["challenge"]
+
+                    save_state(
+                        config,
+                        state
+                    )
+
+                    outcome["steps"] = step
+
+                    return outcome
 
             record_spec_failure(
                 config,
@@ -1621,6 +1936,20 @@ Work until both the required build and test commands succeed.
                         "step": step
                     }
                 )
+
+            if outcome is None and challenges is not None:
+                # Nothing filed by the agent this step. Check whether
+                # the harness's own deterministic evidence now warrants
+                # raising the dispute instead of waiting for a model
+                # that may never do it.
+                escalation_result, outcome = (
+                    challenges.escalate()
+                )
+
+                if escalation_result:
+                    print()
+                    print("ESCALATION RESULT:")
+                    print(escalation_result)
 
             if outcome is not None:
                 # A confirmed contract challenge interrupts the loop

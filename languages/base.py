@@ -85,6 +85,53 @@ class LanguageAdapter(ABC):
         """
         return None
 
+    def analyze_test_source(self, source, path=None):
+        """
+        Optional adapter hook: find defects INTRINSIC to generated test
+        code, without compiling anything.
+
+        This exists because a compiler cannot be relied on to reveal
+        them. Test-first contracts are compiled while the requested
+        future API is still missing, and every mainstream compiler
+        suppresses cascading diagnostics inside an expression whose type
+        could not be resolved. A defect sitting inside such an
+        expression is therefore INVISIBLE at gate time and only appears
+        later, once production implements the future API -- i.e. during
+        implementation, against a contract that is already frozen.
+
+        Implementations return a list of dicts:
+
+            {
+                "code": "<adapter diagnostic id>",
+                "message": "<what is wrong>",
+                "line": <1-based line number or None>,
+                "reason": "<why this is intrinsic to the test code>"
+            }
+
+        Only report defects that are wrong REGARDLESS of what production
+        code exists, so a legitimate test-first reference to a future API
+        is never flagged. Returning [] means "nothing intrinsic found",
+        which is also the correct answer for an adapter that cannot do
+        this analysis.
+        """
+        return []
+
+    def parse_diagnostic_locations(self, output):
+        """
+        Optional adapter hook: extract file-attributed diagnostics from
+        build/test output.
+
+        Implementations return a list of dicts:
+
+            {"path": "<repo-relative or absolute>", "line": int|None,
+             "code": str, "message": str}
+
+        Used to decide whether a compile failure is attributable
+        exclusively to frozen test files. Returning [] means "cannot
+        attribute", which callers must treat as insufficient evidence.
+        """
+        return []
+
     def extract_failure_paths(self, output):
         return []
 

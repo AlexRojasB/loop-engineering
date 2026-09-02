@@ -3,6 +3,14 @@ import json
 import re
 
 from core.context import implementation_text
+from core.phases.semantic_audit import (
+    audit_repair_eligible,
+    derive_effective_verdict,
+    hoist_misplaced_verdict,
+    repair_fabricated,
+    validate_audit_schema,
+)
+from core.truncated_json import complete_truncated_json
 from core.authorized_future import (
     NO_AUTHORIZED_FUTURE,
     authorized_future_entries,
@@ -160,6 +168,51 @@ def validate_reviewer_schema(parsed):
     return None
 
 
+def coerce_omitted_issues(parsed, reviewer_label="reviewer"):
+    """
+    An APPROVE with no `issues` key is unambiguous: approving IS the
+    claim that nothing is wrong, so the empty list is the only reading
+    of the missing field. Some models never emit the key on approval
+    (gemma4:12b did this in 20 of 30 calls in the reviewer comparison),
+    and discarding those verdicts throws away decisions the model got
+    right for a reason that has nothing to do with the contract.
+
+    Filling the field in here, BEFORE the schema gate, keeps the verdict
+    and skips a repair round-trip that would only recover the same
+    answer at the cost of another model call.
+
+    REJECT is deliberately NOT coerced. A rejection with no issues
+    carries nothing to act on -- the revision prompt would have no
+    defect to describe -- so it stays schema-invalid and goes through
+    repair like any other malformed verdict.
+
+    Returns the object to validate; `parsed` is never mutated.
+    """
+
+    if not isinstance(parsed, dict):
+        return parsed
+
+    decision = parsed.get("decision")
+
+    if (
+        not isinstance(decision, str)
+        or decision.upper() != "APPROVE"
+        or "issues" in parsed
+    ):
+        return parsed
+
+    print(
+        f"REVIEWER OMITTED 'issues' ON APPROVE: {reviewer_label} "
+        "returned a bare approval; reading the absent field as an "
+        "empty list rather than discarding the verdict."
+    )
+
+    return {
+        **parsed,
+        "issues": []
+    }
+
+
 def normalize_reviewer_decision(review_json):
     """
     A reviewer that returns APPROVE alongside a non-empty issues list
@@ -282,6 +335,150 @@ def schema_repair_prompt(malformed_response):
     )
 
 
+def audit_repair_prompt(malformed_response):
+    """
+    Format-only repair for a semantic audit.
+
+    Deliberately a separate prompt from the structural one: this template
+    has to spell out that the audit's CONTENT is fixed, because the
+    failure this guards against is a model helpfully filling in the
+    checks it never ran.
+    """
+
+    return render_prompt(
+        "test-semantic-audit-repair.md",
+        malformed_response=malformed_response
+    )
+
+
+def semantic_reviewer_label(reviewer_label):
+    """
+    Whether this reviewer owes an evidence-first audit.
+
+    Keyed on the label rather than an explicit flag so that every caller
+    of the semantic path -- the phase, the confirmation vote, and the
+    offline evaluation harness -- gets the audit contract without having
+    to remember to ask for it. The cheap structural reviewer keeps the
+    old bare-verdict schema untouched.
+    """
+
+    return str(reviewer_label or "").startswith("semantic")
+
+
+def _recover_verdict_from_incomplete(
+    config,
+    response_text,
+    reviewer_label,
+    path,
+    attempt,
+    require_audit,
+    authorized_symbols,
+    cause
+):
+    """
+    The one verdict that may be salvaged from an INCOMPLETE reviewer
+    response: a rejection the model had already finished stating.
+
+    Motivation, from the 16K context evaluation (case 9): the reviewer
+    correctly found that requirement 3 had no test, wrote the rejection
+    down, and the harness returned `call_failed` because the response was
+    one closing brace short of parseable. The finding was real, the
+    reasoning was sound, and it was discarded.
+
+    The asymmetry is what makes this safe, and it is not negotiable.
+    Truncation DELETES content, and deleted audit content can only ever
+    make a contract look cleaner than the model actually found it -- the
+    uncovered requirement may be precisely the one that got cut off. So:
+
+        a recovered REJECT is trustworthy   -- the evidence is present,
+                                               verbatim, in bytes the
+                                               model itself emitted;
+        a recovered APPROVE is never        -- absence of evidence in a
+                                               document known to be
+                                               missing its tail proves
+                                               nothing.
+
+    Nothing here reformats semantic content. Structural completion closes
+    brackets; `hoist_misplaced_verdict` moves an existing verdict up one
+    level; `coerce_omitted_issues` is the same pre-gate coercion the
+    normal path already applies. No repair model call is made, so there
+    is no route by which missing evidence could be invented.
+
+    Returns an "ok"/REJECT outcome, or None to leave the caller on its
+    existing failure path.
+    """
+
+    if not response_text or not str(response_text).strip():
+        return None
+
+    try:
+        parsed = json.loads(response_text)
+
+    except (json.JSONDecodeError, ValueError):
+        parsed = complete_truncated_json(response_text)
+
+    if not isinstance(parsed, dict):
+        return None
+
+    parsed = hoist_misplaced_verdict(
+        coerce_omitted_issues(
+            parsed,
+            reviewer_label
+        )
+    )
+
+    if require_audit:
+        if validate_audit_schema(
+            parsed,
+            authorized_symbols
+        ) is not None:
+            return None
+
+        decision, issues = derive_effective_verdict(
+            parsed
+        )
+
+    else:
+        if validate_reviewer_schema(parsed) is not None:
+            return None
+
+        decision, issues = normalize_reviewer_decision(
+            parsed
+        )
+
+    if decision != "REJECT" or not issues:
+        # An approval, or a rejection with nothing to act on. Neither is
+        # recoverable from a document that is missing its tail.
+        return None
+
+    print(
+        f"INCOMPLETE REVIEWER RESPONSE RECOVERED ({cause}): "
+        f"{reviewer_label} had already stated a rejection with "
+        "evidence, so the verdict stands. An approval would NOT have "
+        "been recoverable from a truncated audit."
+    )
+
+    append_history(
+        config,
+        "reviewer_verdict_recovered",
+        {
+            "file": path,
+            "attempt": attempt,
+            "reviewer": reviewer_label,
+            "cause": cause,
+            "decision": decision,
+            "issues": issues,
+            "raw_response": response_text
+        }
+    )
+
+    return {
+        "status": "ok",
+        "decision": decision,
+        "issues": issues
+    }
+
+
 def _resolve_reviewer_verdict(
     config,
     model,
@@ -291,21 +488,33 @@ def _resolve_reviewer_verdict(
     attempt,
     think,
     num_ctx,
-    num_predict
+    num_predict,
+    authorized_symbols=None,
+    require_audit=None
 ):
     """
     Run one reviewer call end to end: dispatch, thinking/termination
-    logging, truncation handling, and JSON schema validation with one
+    logging, truncation handling, and schema validation with one
     bounded format-repair attempt if the response is a complete but
-    schema-invalid JSON object (e.g. a chat-style envelope instead of
-    {"decision": ..., "issues": [...]}).
+    schema-invalid JSON object.
+
+    Semantic reviewers (see semantic_reviewer_label) must return a
+    structured audit, and their effective verdict is DERIVED from that
+    audit rather than read from the model's own `decision` field. The
+    structural reviewer keeps the original {"decision", "issues"} shape.
 
     Returns a dict:
 
         {"status": "call_failed"}                       transient
         {"status": "truncated"}                          discard, retry
+        {"status": "unparseable"}                        discard, retry
         {"status": "invalid"}                             discard, retry
         {"status": "ok", "decision": ..., "issues": [...]}
+
+    An INCOMPLETE response (truncated, or unparseable JSON) gets exactly
+    one salvage attempt, and only a rejection the model had already
+    finished stating can survive it -- never an approval. See
+    _recover_verdict_from_incomplete for why that asymmetry is required.
 
     Every non-"ok" status must be treated identically by the caller:
     do not approve, do not add to rejection_memory, retry safely.
@@ -350,6 +559,11 @@ def _resolve_reviewer_verdict(
             }
         )
 
+    # Resolved before the incomplete-response branches below, both of
+    # which need to know which schema the response is being held to.
+    if require_audit is None:
+        require_audit = semantic_reviewer_label(reviewer_label)
+
     if review.get("truncated"):
         record_spec_failure(
             config,
@@ -364,15 +578,88 @@ def _resolve_reviewer_verdict(
             f"{reviewer_label} verdict is incomplete, "
             "discarding and retrying."
         )
-        return {"status": "truncated"}
+
+        recovered = _recover_verdict_from_incomplete(
+            config,
+            review["response"],
+            reviewer_label,
+            path,
+            attempt,
+            require_audit,
+            authorized_symbols,
+            f"done_reason={review.get('done_reason')}"
+        )
+
+        return recovered or {"status": "truncated"}
 
     try:
         parsed = json.loads(review["response"])
 
     except json.JSONDecodeError:
-        return {"status": "call_failed"}
+        # Not a service failure: the model answered, and the answer was
+        # cut off mid-JSON. Observed with no done_reason at all, so the
+        # truncation guard above cannot be relied on to catch it.
+        recovered = _recover_verdict_from_incomplete(
+            config,
+            review["response"],
+            reviewer_label,
+            path,
+            attempt,
+            require_audit,
+            authorized_symbols,
+            "unparseable JSON"
+        )
 
-    schema_issue = validate_reviewer_schema(parsed)
+        if recovered:
+            return recovered
+
+        record_spec_failure(
+            config,
+            "model",
+            f"{reviewer_label} reviewer response was not parseable "
+            f"JSON (done_reason={review.get('done_reason')})."
+        )
+
+        print(
+            "REVIEWER RESPONSE UNPARSEABLE "
+            f"(done_reason={review.get('done_reason')}): "
+            f"{reviewer_label} response is not valid JSON and states "
+            "no recoverable rejection, discarding and retrying."
+        )
+
+        append_history(
+            config,
+            "reviewer_response_unparseable",
+            {
+                "file": path,
+                "attempt": attempt,
+                "reviewer": reviewer_label,
+                "raw_response": review["response"],
+                "done_reason": review.get("done_reason")
+            }
+        )
+
+        return {"status": "unparseable"}
+
+    # Both of these are structural coercions of what the model already
+    # said, and both run BEFORE the schema gate, never inside it. The
+    # hoist is what stops a rejection the model wrote one level too deep
+    # from being read as an approval -- see hoist_misplaced_verdict.
+    parsed = hoist_misplaced_verdict(
+        coerce_omitted_issues(
+            parsed,
+            reviewer_label
+        )
+    )
+
+    if require_audit:
+        schema_issue = validate_audit_schema(
+            parsed,
+            authorized_symbols
+        )
+
+    else:
+        schema_issue = validate_reviewer_schema(parsed)
 
     if schema_issue is None:
         print(
@@ -382,7 +669,43 @@ def _resolve_reviewer_verdict(
             )
         )
 
-        decision, issues = normalize_reviewer_decision(parsed)
+        if require_audit:
+            decision, issues = derive_effective_verdict(parsed)
+
+            if decision is None:
+                # A schema-valid audit that still supports no verdict.
+                # Fail closed exactly like a malformed one: discard and
+                # let the caller retry.
+                print(
+                    "SEMANTIC AUDIT UNUSABLE "
+                    f"({reviewer_label}): {issues}"
+                )
+
+                append_history(
+                    config,
+                    "reviewer_audit_unusable",
+                    {
+                        "file": path,
+                        "attempt": attempt,
+                        "reviewer": reviewer_label,
+                        "raw_response": review["response"],
+                        "reason": issues
+                    }
+                )
+
+                return {"status": "invalid"}
+
+            if decision != str(
+                parsed.get("decision") or ""
+            ).upper():
+                print(
+                    "EFFECTIVE VERDICT DERIVED FROM AUDIT: model "
+                    f"stated {parsed.get('decision')!r}, the audit "
+                    f"supports {decision!r}."
+                )
+
+        else:
+            decision, issues = normalize_reviewer_decision(parsed)
 
         return {
             "status": "ok",
@@ -390,17 +713,9 @@ def _resolve_reviewer_verdict(
             "issues": issues
         }
 
-    # Complete, non-truncated response, but the wrong shape (for
-    # example a chat-style {"role": ..., "content": ...} envelope
-    # instead of {"decision": ..., "issues": [...]}). Preserve it for
-    # observability, then attempt exactly one bounded format repair
+    # Complete, non-truncated response, but the wrong shape. Preserve it
+    # for observability, then attempt exactly one bounded format repair
     # with the SAME model — never a re-review, never recursive.
-    print(
-        f"REVIEWER RESPONSE SCHEMA INVALID ({schema_issue}): "
-        f"{reviewer_label} verdict does not match the required "
-        "schema. Attempting one bounded format repair."
-    )
-
     append_history(
         config,
         "reviewer_schema_invalid",
@@ -414,10 +729,46 @@ def _resolve_reviewer_verdict(
         }
     )
 
+    if require_audit and not audit_repair_eligible(parsed):
+        # Nothing was audited, so there is nothing to reformat. Repair
+        # rewrites what the model said; asking it to produce an audit it
+        # never performed is asking it to invent one. A fresh semantic
+        # review attempt is the only honest recovery.
+        print(
+            f"SEMANTIC AUDIT ABSENT ({schema_issue}): {reviewer_label} "
+            "returned a verdict without audit evidence. Schema repair "
+            "cannot supply evidence the model never produced — "
+            "discarding and retrying."
+        )
+
+        append_history(
+            config,
+            "reviewer_audit_absent",
+            {
+                "file": path,
+                "attempt": attempt,
+                "reviewer": reviewer_label,
+                "raw_response": review["response"],
+                "reason": schema_issue
+            }
+        )
+
+        return {"status": "invalid"}
+
+    print(
+        f"REVIEWER RESPONSE SCHEMA INVALID ({schema_issue}): "
+        f"{reviewer_label} verdict does not match the required "
+        "schema. Attempting one bounded format repair."
+    )
+
     repair = call_model(
         config,
         model,
-        schema_repair_prompt(review["response"]),
+        (
+            audit_repair_prompt(review["response"])
+            if require_audit
+            else schema_repair_prompt(review["response"])
+        ),
         json_mode=True,
         think=False,
         num_ctx=num_ctx,
@@ -437,18 +788,55 @@ def _resolve_reviewer_verdict(
     else:
         try:
             repaired = json.loads(repair["response"])
-            repair_schema_issue = validate_reviewer_schema(repaired)
+
+            repaired = coerce_omitted_issues(
+                repaired,
+                reviewer_label
+            )
+
+            if require_audit:
+                if repair_fabricated(parsed, repaired):
+                    # The repair returned more audit entries than it was
+                    # given. Reshaping cannot add findings, so this is
+                    # invention and the whole repair is void.
+                    repair_schema_issue = (
+                        "repair fabricated audit content that was not "
+                        "present in the original response"
+                    )
+
+                else:
+                    repair_schema_issue = validate_audit_schema(
+                        repaired,
+                        authorized_symbols
+                    )
+
+            else:
+                repair_schema_issue = validate_reviewer_schema(repaired)
 
         except json.JSONDecodeError:
             repair_schema_issue = "response is not valid JSON"
             repaired = None
 
         if repair_schema_issue is None:
-            repair_outcome = "ok"
+            if require_audit:
+                repaired_decision, repaired_issues = (
+                    derive_effective_verdict(repaired)
+                )
 
-            repaired_decision, repaired_issues = (
-                normalize_reviewer_decision(repaired)
-            )
+                if repaired_decision is None:
+                    repair_outcome = (
+                        f"still_invalid: {repaired_issues}"
+                    )
+
+                else:
+                    repair_outcome = "ok"
+
+            else:
+                repair_outcome = "ok"
+
+                repaired_decision, repaired_issues = (
+                    normalize_reviewer_decision(repaired)
+                )
 
         else:
             repair_outcome = f"still_invalid: {repair_schema_issue}"
@@ -1062,7 +1450,11 @@ def run_test_contract_phase(
                     False
                 ),
                 reviewer_num_ctx,
-                reviewer_num_predict
+                reviewer_num_predict,
+                authorized_symbols=[
+                    entry["symbol"]
+                    for entry in authorized_entries
+                ]
             )
 
             if semantic_outcome["status"] != "ok":
@@ -1123,7 +1515,11 @@ def run_test_contract_phase(
                     False
                 ),
                 reviewer_num_ctx,
-                reviewer_num_predict
+                reviewer_num_predict,
+                authorized_symbols=[
+                    entry["symbol"]
+                    for entry in authorized_entries
+                ]
             )
 
             if confirmation_outcome["status"] != "ok":

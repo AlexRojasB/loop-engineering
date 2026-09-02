@@ -43,10 +43,63 @@ from tests.fixtures.toy_domains import (  # noqa: E402
 )
 
 
+def clean_audit():
+    """
+    The minimum evidence-first audit a semantic reviewer must produce.
+
+    Every scripted verdict below carries one, because since the
+    evidence-first redesign a bare {"decision": ...} is not a semantic
+    review at all -- it is discarded and retried. The structural
+    reviewer ignores the extra key, so one builder still serves both
+    roles and these tests keep exercising phase orchestration rather
+    than schema shape. Schema shape has its own suite in
+    tests/test_semantic_audit.py.
+    """
+
+    return {
+        "requirements": [
+            {
+                "id": "1",
+                "covered": True,
+                "evidence": "the scripted contract covers this requirement"
+            }
+        ],
+        "setup": {
+            "applicable": True,
+            "checks": [
+                {
+                    "target": "ScriptedTest",
+                    "valid": True,
+                    "evidence": "Arrange builds the state under test"
+                }
+            ]
+        },
+        "identity": {
+            "applicable": False,
+            "reason": "no assertion reads an externally built object"
+        },
+        "transitions": {
+            "applicable": False,
+            "reason": "no test asserts a state or quantity change"
+        },
+        "future_api": {
+            "applicable": False,
+            "reason": "the scripted gate authorized no future symbols"
+        },
+        "contradictions": []
+    }
+
+
 def approve(thinking=None, done_reason="stop"):
     return {
         "ok": True,
-        "response": json.dumps({"decision": "APPROVE", "issues": []}),
+        "response": json.dumps(
+            {
+                "audit": clean_audit(),
+                "decision": "APPROVE",
+                "issues": []
+            }
+        ),
         "thinking": thinking,
         "done_reason": done_reason,
         "truncated": done_reason == "length"
@@ -57,7 +110,11 @@ def reject(issue, thinking=None, done_reason="stop"):
     return {
         "ok": True,
         "response": json.dumps(
-            {"decision": "REJECT", "issues": [issue]}
+            {
+                "audit": clean_audit(),
+                "decision": "REJECT",
+                "issues": [issue]
+            }
         ),
         "thinking": thinking,
         "done_reason": done_reason,
@@ -91,16 +148,43 @@ def coder_returns(snippet):
     }
 
 
-def envelope_response(role, content, thinking=None, done_reason="stop"):
+def envelope_response(
+    role,
+    content,
+    thinking=None,
+    done_reason="stop",
+    audit=True
+):
     """
     Simulates a complete, non-truncated response that is valid JSON
     but the wrong top-level shape — the exact failure mode found by
     the real-model smoke test: {"role": ..., "content": ...} instead
     of {"decision": ..., "issues": [...]}.
+
+    `audit=True` carries the structured audit alongside the wrong
+    envelope, which is what a semantic reviewer's malformed response
+    actually looks like: the evidence is there, the wrapper is wrong.
+    That is the only malformed shape schema repair is allowed to touch,
+    since repair reshapes what the model said and cannot supply an
+    audit it never performed. Pass audit=False for the bare envelope
+    that must NOT be repaired.
     """
+
+    payload = {"role": role, "content": content}
+
+    if audit:
+        # A complete audit whose verdict field is unusable: schema
+        # repair exists for exactly this, and the audit content it must
+        # preserve is all present. Note the audit alone would now be
+        # valid -- `decision` is optional since the verdict is derived
+        # from the evidence -- so the bad value is what makes this
+        # malformed.
+        payload["audit"] = clean_audit()
+        payload["decision"] = "UNCLEAR"
+
     return {
         "ok": True,
-        "response": json.dumps({"role": role, "content": content}),
+        "response": json.dumps(payload),
         "thinking": thinking,
         "done_reason": done_reason,
         "truncated": done_reason == "length"
@@ -1057,6 +1141,113 @@ class TestContractPhaseHarness(unittest.TestCase):
         self.assertEqual(len(repair_events), 1)
         self.assertEqual(repair_events[0]["data"]["outcome"], "ok")
 
+    def test_B2_semantic_response_without_audit_is_never_repaired(self):
+        # The evidence-first rule at phase level: a semantic response
+        # carrying no audit is not a formatting problem, so repair is
+        # not even attempted. Asking the model to reformat an audit it
+        # never performed can only produce an invented one.
+        self._write("Ledger.cs", LEDGER_PRODUCTION)
+        self._write("LedgerTests.cs", LEDGER_ORIGINAL_TEST_FILE)
+
+        scripted = ScriptedCallModel(
+            {
+                "mock-coder-model":
+                    coder_returns(LEDGER_GOOD_SNIPPET),
+                "mock-structural-model":
+                    approve(thinking="setup looks fine"),
+                "mock-semantic-model":
+                    envelope_response(
+                        "test_audit",
+                        "Decision: APPROVE",
+                        audit=False
+                    ),
+            }
+        )
+
+        config = self._base_config(max_test_generation_attempts=1)
+
+        with mock.patch.object(
+            test_contract_phase, "call_model", scripted
+        ):
+            test_contract_phase.run_test_contract_phase(
+                config, self.workspace, LEDGER_TASK, {},
+                [{"path": "Ledger.cs", "type": "implementation", "reason": "x"}],
+                [{"path": "LedgerTests.cs", "type": "test", "reason": "x"}]
+            )
+
+        # One semantic call and no repair call.
+        self.assertEqual(
+            len(scripted.calls_for("mock-semantic-model")), 1
+        )
+
+        events = self._history_events(config)
+
+        self.assertEqual(
+            [
+                event
+                for event in events
+                if event["event"] == "reviewer_schema_repair"
+            ],
+            []
+        )
+
+        absent = [
+            event
+            for event in events
+            if event["event"] == "reviewer_audit_absent"
+        ]
+
+        self.assertEqual(len(absent), 1)
+        self.assertEqual(absent[0]["data"]["reviewer"], "semantic")
+
+    def test_B3_bare_approve_never_freezes_a_contract(self):
+        # The single most important regression: the verdict both models
+        # defaulted to in the A/B evaluation must not be able to freeze
+        # anything.
+        self._write("Ledger.cs", LEDGER_PRODUCTION)
+        self._write("LedgerTests.cs", LEDGER_ORIGINAL_TEST_FILE)
+
+        bare = {
+            "ok": True,
+            "response": json.dumps(
+                {"decision": "APPROVE", "issues": []}
+            ),
+            "thinking": None,
+            "done_reason": "stop",
+            "truncated": False
+        }
+
+        scripted = ScriptedCallModel(
+            {
+                "mock-coder-model":
+                    coder_returns(LEDGER_GOOD_SNIPPET),
+                "mock-structural-model": approve(),
+                "mock-semantic-model": bare,
+            }
+        )
+
+        config = self._base_config(max_test_generation_attempts=2)
+
+        with mock.patch.object(
+            test_contract_phase, "call_model", scripted
+        ):
+            test_contract_phase.run_test_contract_phase(
+                config, self.workspace, LEDGER_TASK, {},
+                [{"path": "Ledger.cs", "type": "implementation", "reason": "x"}],
+                [{"path": "LedgerTests.cs", "type": "test", "reason": "x"}]
+            )
+
+        events = self._history_events(config)
+
+        self.assertEqual(
+            [
+                event
+                for event in events
+                if event["event"] == "test_contract_frozen"
+            ],
+            []
+        )
+
     def test_C_repair_recovers_reject_and_issues_flow_into_rejection_memory(self):
         self._write("Ledger.cs", LEDGER_PRODUCTION)
         self._write("LedgerTests.cs", LEDGER_ORIGINAL_TEST_FILE)
@@ -1440,6 +1631,96 @@ class ValidateReviewerSchemaTests(unittest.TestCase):
             ["decision", "REJECT"]
         )
         self.assertIsNotNone(reason)
+
+
+class CoerceOmittedIssuesTests(unittest.TestCase):
+    # A bare {"decision": "APPROVE"} is a correct verdict in the wrong
+    # shape. Coercion runs before the schema gate so the decision
+    # survives; the gate itself stays strict.
+
+    def test_bare_approve_gains_empty_issues(self):
+        self.assertEqual(
+            test_contract_phase.coerce_omitted_issues(
+                {"decision": "APPROVE"}
+            ),
+            {"decision": "APPROVE", "issues": []}
+        )
+
+    def test_coerced_bare_approve_passes_the_schema_gate(self):
+        self.assertIsNone(
+            test_contract_phase.validate_reviewer_schema(
+                test_contract_phase.coerce_omitted_issues(
+                    {"decision": "APPROVE"}
+                )
+            )
+        )
+
+    def test_lowercase_bare_approve_is_coerced(self):
+        self.assertEqual(
+            test_contract_phase.coerce_omitted_issues(
+                {"decision": "approve"}
+            ),
+            {"decision": "approve", "issues": []}
+        )
+
+    def test_bare_reject_is_left_alone(self):
+        # A rejection with no issues has nothing for the revision
+        # prompt to act on, so it must stay invalid.
+        coerced = test_contract_phase.coerce_omitted_issues(
+            {"decision": "REJECT"}
+        )
+        self.assertEqual(coerced, {"decision": "REJECT"})
+        self.assertIsNotNone(
+            test_contract_phase.validate_reviewer_schema(coerced)
+        )
+
+    def test_existing_issues_are_never_overwritten(self):
+        self.assertEqual(
+            test_contract_phase.coerce_omitted_issues(
+                {"decision": "APPROVE", "issues": ["x"]}
+            ),
+            {"decision": "APPROVE", "issues": ["x"]}
+        )
+
+    def test_approve_with_non_list_issues_stays_invalid(self):
+        coerced = test_contract_phase.coerce_omitted_issues(
+            {"decision": "APPROVE", "issues": "not a list"}
+        )
+        self.assertIsNotNone(
+            test_contract_phase.validate_reviewer_schema(coerced)
+        )
+
+    def test_input_is_not_mutated(self):
+        original = {"decision": "APPROVE"}
+        test_contract_phase.coerce_omitted_issues(original)
+        self.assertEqual(original, {"decision": "APPROVE"})
+
+    def test_chat_style_envelope_is_left_alone(self):
+        self.assertEqual(
+            test_contract_phase.coerce_omitted_issues(
+                {"role": "test_audit", "content": "Decision: APPROVE"}
+            ),
+            {"role": "test_audit", "content": "Decision: APPROVE"}
+        )
+
+    def test_non_dict_is_returned_unchanged(self):
+        self.assertEqual(
+            test_contract_phase.coerce_omitted_issues(
+                ["decision", "APPROVE"]
+            ),
+            ["decision", "APPROVE"]
+        )
+
+    def test_coerced_approval_normalizes_to_approve(self):
+        decision, issues = (
+            test_contract_phase.normalize_reviewer_decision(
+                test_contract_phase.coerce_omitted_issues(
+                    {"decision": "APPROVE"}
+                )
+            )
+        )
+        self.assertEqual(decision, "APPROVE")
+        self.assertEqual(issues, [])
 
 
 if __name__ == "__main__":

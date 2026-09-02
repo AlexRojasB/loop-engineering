@@ -121,15 +121,6 @@ Before returning APPROVE, confirm every item under "Previously Raised
 Concerns In This Test Contract Run" is RESOLVED. If any is STILL PRESENT,
 return REJECT and include it in issues.
 
-# Output
-
-Return JSON only:
-
-{{
-  "decision": "APPROVE" | "REJECT",
-  "issues": []
-}}
-
 # Effective state validation
 
 In addition to entity identity and setup reachability, compute the entity's EFFECTIVE STATE immediately before the tested action.
@@ -274,3 +265,138 @@ does NOT resolve the concern if `library` still has no path to reach
 `book`. The object must actually be registered with the owning
 component; renaming which receiver a method is called on does not by
 itself achieve that.
+
+# Output
+
+You must AUDIT before you decide. A verdict without an audit is
+discarded and does not count as a review.
+
+Return JSON only, in exactly this shape:
+
+{{
+  "audit": {{
+    "requirements": [
+      {{
+        "id": "1",
+        "covered": true,
+        "evidence": "TestName asserts the behavior this requirement describes"
+      }}
+    ],
+
+    "setup": {{
+      "applicable": true,
+      "checks": [
+        {{
+          "target": "TestName",
+          "valid": true,
+          "evidence": "Arrange creates the state the test claims to exercise"
+        }}
+      ]
+    }},
+
+    "identity": {{
+      "applicable": false,
+      "reason": "no test asserts state on an object built outside its owner"
+    }},
+
+    "transitions": {{
+      "applicable": true,
+      "checks": [
+        {{
+          "target": "TestName",
+          "valid": true,
+          "evidence": "balance 100 -> Withdraw(20) -> asserts 80"
+        }}
+      ]
+    }},
+
+    "future_api": {{
+      "applicable": true,
+      "checks": [
+        {{
+          "target": "CloseAccount",
+          "valid": true,
+          "evidence": "listed as deterministically authorized above"
+        }}
+      ]
+    }},
+
+    "contradictions": []
+  }},
+
+  "decision": "APPROVE",
+  "issues": []
+}}
+
+## How to fill the audit
+
+`requirements` — one entry per numbered requirement in the Task above.
+Never empty. `id` is the requirement number. `covered` says whether some
+test actually demonstrates it. `evidence` names the test and what it
+asserts. An uncovered requirement means the contract is incomplete.
+
+`setup`, `identity`, `transitions`, `future_api` — each is either
+
+    {{"applicable": true, "checks": [...]}}
+
+or
+
+    {{"applicable": false, "reason": "why this contract has nothing of that kind"}}
+
+You MUST classify all four. Leaving one out is not "nothing to report";
+it is an incomplete audit and the whole response is discarded. Marking
+one `applicable: false` is legitimate and expected when the contract has
+no such construct — do not invent checks to fill space.
+
+- `setup` — does Arrange actually create the state each test claims?
+- `identity` — is the object the assertion reads the same object the
+  action can reach? Applicable only when a test asserts mutated state on
+  an object obtained outside the component performing the action.
+- `transitions` — the effective state or numeric value before the action,
+  the action, and the value asserted after. Applicable when a test
+  asserts a state or quantity change.
+- `future_api` — one entry per symbol listed under "Deterministically
+  Authorized Future API". Those symbols are proven authorized; mark them
+  `valid: true`. Marking an authorized symbol invalid because it does not
+  exist yet voids your entire audit.
+
+`contradictions` — every conflict you found between the task, the setup,
+the action, the assertion, and production behavior. Empty when none.
+
+`evidence` and `reason` must be concrete and specific. "ok", "valid",
+"checked" and similar are not evidence and void the audit. One short
+sentence is enough — do not write essays, and do not restate the code.
+
+## Numeric conditions
+
+When a check turns on a numeric literal, record it:
+
+{{
+  "target": "CloseAccount_NonZeroBalance_ReturnsFalse",
+  "valid": true,
+  "observed_value": "100m",
+  "required_condition": "!= 0",
+  "evidence": "the account is created with 100m, which satisfies non-zero"
+}}
+
+If you supply `observed_value` and `required_condition`, then `valid`
+MUST be the result of that comparison and nothing else. The harness
+evaluates the arithmetic itself. If you write that 100m fails a `!= 0`
+condition, the audit is thrown out as self-contradictory — 100m is
+non-zero. Put any unrelated defect in its own check or in
+`contradictions`.
+
+## Decision
+
+Decide only after the audit is complete.
+
+APPROVE requires: every requirement covered, every applicable check
+valid, and no contradictions. If any of those fails, the verdict is
+REJECT regardless of what you write in `decision` — the harness derives
+the effective verdict from your audit.
+
+REJECT requires at least one issue, failed check, or contradiction. A
+rejection with nothing to act on is discarded.
+
+Keep the whole response compact. It must fit well within your output
+budget; a truncated audit is a discarded audit.

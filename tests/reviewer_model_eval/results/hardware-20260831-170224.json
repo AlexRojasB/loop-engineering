@@ -1,0 +1,30 @@
+{
+  "snapshots": [
+    {
+      "label": "before:qwen3.5:9b",
+      "timestamp": "2026-08-31T23:02:24.558945+00:00",
+      "ollama_ps": "NAME          ID              SIZE      PROCESSOR         CONTEXT    UNTIL              \nqwen3.5:9b    6488c96fa5fa    6.5 GB    94%/6% CPU/GPU    16384      4 minutes from now",
+      "free_h": "total        used        free      shared  buff/cache   available\nMem:            15Gi       8.3Gi       472Mi       5.2Gi        12Gi       7.3Gi\nSwap:          4.0Gi       1.0Gi       3.0Gi",
+      "nvidia_smi": "Mon Aug 31 17:02:24 2026       \n+-----------------------------------------------------------------------------------------+\n| NVIDIA-SMI 580.173.02             Driver Version: 580.173.02     CUDA Version: 13.0     |\n+-----------------------------------------+------------------------+----------------------+\n| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |\n| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |\n|                                         |                        |               MIG M. |\n|=========================================+========================+======================|\n|   0  NVIDIA GeForce GTX 970M        Off |   00000000:01:00.0 Off |                  N/A |\n| N/A   63C    P0             22W / 1000W |    1712MiB /   3072MiB |      0%      Default |\n|                                         |                        |                  N/A |\n+-----------------------------------------+------------------------+----------------------+\n\n+-----------------------------------------------------------------------------------------+\n| Processes:                                                                              |\n|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |\n|        ID   ID                                                               Usage      |\n|=========================================================================================|\n|    0   N/A  N/A            1581      G   /usr/lib/xorg/Xorg                       33MiB |\n|    0   N/A  N/A            1748      G   /usr/bin/gnome-shell                      5MiB |\n|    0   N/A  N/A           71100      C   ...local/lib/ollama/llama-server       1647MiB |\n+-----------------------------------------------------------------------------------------+"
+    },
+    {
+      "label": "after:qwen3.5:9b",
+      "timestamp": "2026-09-01T01:00:02.501946+00:00",
+      "ollama_ps": "NAME          ID              SIZE      PROCESSOR         CONTEXT    UNTIL              \nqwen3.5:9b    6488c96fa5fa    6.5 GB    94%/6% CPU/GPU    16384      4 minutes from now",
+      "free_h": "total        used        free      shared  buff/cache   available\nMem:            15Gi        12Gi       589Mi       5.2Gi       7.6Gi       2.7Gi\nSwap:          4.0Gi       1.0Gi       3.0Gi",
+      "nvidia_smi": "Mon Aug 31 19:00:02 2026       \n+-----------------------------------------------------------------------------------------+\n| NVIDIA-SMI 580.173.02             Driver Version: 580.173.02     CUDA Version: 13.0     |\n+-----------------------------------------+------------------------+----------------------+\n| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |\n| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |\n|                                         |                        |               MIG M. |\n|=========================================+========================+======================|\n|   0  NVIDIA GeForce GTX 970M        Off |   00000000:01:00.0 Off |                  N/A |\n| N/A   65C    P0             22W / 1000W |    1712MiB /   3072MiB |      0%      Default |\n|                                         |                        |                  N/A |\n+-----------------------------------------+------------------------+----------------------+\n\n+-----------------------------------------------------------------------------------------+\n| Processes:                                                                              |\n|  GPU   GI   CI              PID   Type   Process name                        GPU Memory |\n|        ID   ID                                                               Usage      |\n|=========================================================================================|\n|    0   N/A  N/A            1581      G   /usr/lib/xorg/Xorg                       33MiB |\n|    0   N/A  N/A            1748      G   /usr/bin/gnome-shell                      5MiB |\n|    0   N/A  N/A           71100      C   ...local/lib/ollama/llama-server       1647MiB |\n+-----------------------------------------------------------------------------------------+"
+    }
+  ],
+  "per_model_load": {
+    "qwen3.5:9b": {
+      "samples": 1386,
+      "mem_used_mb_peak": 13321,
+      "mem_available_mb_min": 2611,
+      "swap_used_mb_peak": 1040,
+      "gpu_mem_used_mb_peak": 1712,
+      "gpu_temp_c_peak": 77,
+      "gpu_util_pct_peak": 100
+    }
+  },
+  "total_runtime_s": 7058.0
+}
